@@ -5,6 +5,8 @@
  * All data stored in localStorage with proper error handling
  */
 
+import { SEED_FREQUENCIES } from '../constants/seeds';
+
 // ============================================================================
 // Data Types
 // ============================================================================
@@ -75,12 +77,14 @@ export class StorageManager {
   /**
    * Load data from localStorage
    * Returns default structure if nothing exists or parse fails
+   * Seeds with default frequencies on first load
    */
   static load(): RadioData {
     try {
       const raw = localStorage.getItem(this.STORAGE_KEY);
       if (!raw) {
-        return this.getDefaultData();
+        const defaultData = this.getDefaultData();
+        return this.seedIfEmpty(defaultData);
       }
 
       const data = JSON.parse(raw) as RadioData;
@@ -575,6 +579,32 @@ export class StorageManager {
       },
       version: this.VERSION,
     };
+  }
+
+  /**
+   * Seed default frequencies on first load
+   * Only populates if frequencies array is empty
+   */
+  private static seedIfEmpty(data: RadioData): RadioData {
+    if (data.frequencies.length > 0) return data;
+
+    console.log('[StorageManager] First run - seeding default frequencies');
+
+    const now = Date.now();
+    SEED_FREQUENCIES.forEach((seed, i) => {
+      data.frequencies.push({
+        videoId: seed.videoId,
+        title: seed.title,
+        addedAt: now - i * 1000, // Stagger for sort order
+        stars: [],
+        sessions: [],
+        skips: 0,
+        completions: 0,
+      });
+    });
+
+    this.save(data);
+    return data;
   }
 
   /**
