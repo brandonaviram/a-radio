@@ -14,11 +14,17 @@ export interface Star {
   createdAt: number; // Date.now()
 }
 
+export interface Session {
+  startedAt: number; // Date.now() when session began
+  duration: number; // seconds listened
+}
+
 export interface Frequency {
   videoId: string;
   title: string;
   addedAt: number;
   stars: Star[];
+  sessions: Session[]; // Track listening behavior
   archivistNotes?: string; // AI-generated museum note
   lastPlayedAt?: number;
 }
@@ -45,7 +51,7 @@ export interface RadioData {
 
 export class StorageManager {
   private static readonly STORAGE_KEY = 'aviram-radio-data';
-  private static readonly VERSION = 2; // v2: Added archivistNotesCache
+  private static readonly VERSION = 3; // v3: Added session tracking
   private static readonly DEFAULT_WINDOW_SIZE = 30; // seconds
   private static readonly DEFAULT_PEAK_COUNT = 10;
 
@@ -118,6 +124,7 @@ export class StorageManager {
       title,
       addedAt: Date.now(),
       stars: [],
+      sessions: [],
     };
 
     data.frequencies.push(frequency);
@@ -529,6 +536,18 @@ export class StorageManager {
       }
     }
 
+    // v2 → v3: Add session tracking
+    if (data.version < 3) {
+      console.log('[StorageManager] v2 → v3: Adding session tracking');
+
+      // Initialize sessions array for existing frequencies
+      for (const freq of data.frequencies) {
+        if (!freq.sessions) {
+          freq.sessions = [];
+        }
+      }
+    }
+
     data.version = this.VERSION;
     this.save(data);
     return data;
@@ -568,5 +587,138 @@ export class StorageManager {
     return data.frequencies
       .filter(f => f.lastPlayedAt && f.lastPlayedAt > sevenDaysAgo)
       .sort((a, b) => (b.lastPlayedAt || 0) - (a.lastPlayedAt || 0));
+  }
+
+  // ==========================================================================
+  // Session Tracking (Behavior-Based Ranking)
+  // ==========================================================================
+
+  /**
+   * Record a listening session for a frequency
+   * Call this when user stops playing or navigates away
+   */
+  static recordSession(videoId: string, duration: number): void {
+    if (duration < 10) return; // Ignore sessions shorter than 10 seconds
+
+    const data = this.load();
+    const frequency = data.frequencies.find(f => f.videoId === videoId);
+
+    if (!frequency) {
+      console.warn(`[StorageManager] Cannot record session: frequency ${videoId} not found`);
+      return;
+    }
+
+    frequency.sessions.push({
+      startedAt: Date.now() - (duration * 1000), // Approximate start time
+      duration,
+    });
+
+    this.save(data);
+  }
+
+  /**
+   * Get total listen time for a frequency (in seconds)
+   */
+  static getTotalListenTime(videoId: string): number {
+    const frequency = this.getFrequency(videoId);
+    if (!frequency) return 0;
+
+    return frequency.sessions.reduce((total, s) => total + s.duration, 0);
+  }
+
+  /**
+   * Get play count for a frequency
+   */
+  static getPlayCount(videoId: string): number {
+    const frequency = this.getFrequency(videoId);
+    if (!frequency) return 0;
+
+    return frequency.sessions.length;
+  }
+
+  // ==========================================================================
+  // Smart Categories ("What Fills Your Cup")
+  // ==========================================================================
+
+  /**
+   * Heavy Rotation - Most frequently played
+   * The stuff you keep coming back to
+   */
+  static getHeavyRotation(limit: number = 5): Frequency[] {
+    const data = this.load();
+
+    return [...data.frequencies]
+      .filter(f => f.sessions && f.sessions.length > 0)
+      .sort((a, b) => (b.sessions?.length || 0) - (a.sessions?.length || 0))
+      .slice(0, limit);
+  }
+
+  /**
+   * Deep Listens - Longest total listen time
+   * The frequencies you've spent the most time with
+   */
+  static getDeepListens(limit: number = 5): Frequency[] {
+    const data = this.load();
+
+    const withTotalTime = data.frequencies.map(f => ({
+      frequency: f,
+      totalTime: (f.sessions || []).reduce((sum, s) => sum + s.duration, 0),
+    }));
+
+    return withTotalTime
+      .filter(item => item.totalTime > 0)
+      .sort((a, b) => b.totalTime - a.totalTime)
+      .slice(0, limit)
+      .map(item => item.frequency);
+  }
+
+  /**
+   * Current Vibe - Recent + frequent combination
+   * What you're into right now (last 7 days, weighted by frequency)
+   */
+  static getCurrentVibe(limit: number = 5): Frequency[] {
+    const data = this.load();
+    const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+
+    const withRecentScore = data.frequencies.map(f => {
+      // Count sessions in last 7 days
+      const sessions = f.sessions || [];
+      const recentSessions = sessions.filter(s => s.startedAt > sevenDaysAgo);
+      const recentCount = recentSessions.length;
+
+      // Calculate recency weight (more recent = higher weight)
+      let recencyWeight = 0;
+      if (f.lastPlayedAt && f.lastPlayedAt > sevenDaysAgo) {
+        // Normalize to 0-1 range (0 = 7 days ago, 1 = now)
+        recencyWeight = (f.lastPlayedAt - sevenDaysAgo) / (7 * 24 * 60 * 60 * 1000);
+      }
+
+      // Combined score: play count + recency bonus
+      const score = recentCount + recencyWeight;
+
+      return { frequency: f, score, recentCount };
+    });
+
+    return withRecentScore
+      .filter(item => item.recentCount > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(item => item.frequency);
+  }
+
+  /**
+   * Get all smart categories at once
+   * Returns categorized frequencies for UI display
+   */
+  static getSmartCategories(): {
+    heavyRotation: Frequency[];
+    deepListens: Frequency[];
+    currentVibe: Frequency[];
+  } {
+    return {
+      heavyRotation: this.getHeavyRotation(),
+      deepListens: this.getDeepListens(),
+      currentVibe: this.getCurrentVibe(),
+    };
   }
 }

@@ -1,11 +1,49 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Power, VolumeX, Minimize2, X } from 'lucide-react'
 
+// YouTube IFrame API types
+declare global {
+  interface Window {
+    YT: {
+      Player: new (
+        elementId: string | HTMLElement,
+        config: {
+          videoId?: string
+          playerVars?: Record<string, number | string>
+          events?: {
+            onReady?: (event: { target: YTPlayer }) => void
+            onStateChange?: (event: { data: number }) => void
+          }
+        }
+      ) => YTPlayer
+      PlayerState: {
+        PLAYING: number
+        PAUSED: number
+        BUFFERING: number
+        ENDED: number
+      }
+    }
+    onYouTubeIframeAPIReady?: () => void
+  }
+}
+
+interface YTPlayer {
+  playVideo: () => void
+  pauseVideo: () => void
+  seekTo: (seconds: number, allowSeekAhead?: boolean) => void
+  loadVideoById: (videoId: string, startSeconds?: number) => void
+  mute: () => void
+  unMute: () => void
+  getPlayerState: () => number
+  getCurrentTime: () => number
+  destroy: () => void
+}
+
 interface RetroTVProps {
-  videoId: string | null // YouTube video ID from main player
-  isPlaying: boolean // Synced with main player
-  isMuted: boolean // Synced with main player
-  currentTime: number // Synced playhead position
+  videoId: string | null
+  isPlaying: boolean
+  isMuted: boolean
+  currentTime: number
   isVisible: boolean
   onClose: () => void
 }
@@ -19,14 +57,43 @@ const STORAGE_KEY = 'retro-tv-position'
 const TV_WIDTH = 320
 const TV_HEIGHT = 240
 const MINIMIZED_SIZE = 48
+const SYNC_THRESHOLD = 2 // seconds - seek if drift exceeds this
+
+// Load YouTube IFrame API script once
+let apiLoaded = false
+let apiReady = false
+const apiReadyCallbacks: (() => void)[] = []
+
+function loadYouTubeAPI(): Promise<void> {
+  return new Promise((resolve) => {
+    if (apiReady) {
+      resolve()
+      return
+    }
+
+    apiReadyCallbacks.push(resolve)
+
+    if (!apiLoaded) {
+      apiLoaded = true
+      const tag = document.createElement('script')
+      tag.src = 'https://www.youtube.com/iframe_api'
+      const firstScriptTag = document.getElementsByTagName('script')[0]
+      firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag)
+
+      window.onYouTubeIframeAPIReady = () => {
+        apiReady = true
+        apiReadyCallbacks.forEach((cb) => cb())
+        apiReadyCallbacks.length = 0
+      }
+    }
+  })
+}
 
 export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, onClose }: RetroTVProps) {
   const [isMinimized, setIsMinimized] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
-  const [syncedTime, setSyncedTime] = useState(0) // Track last synced time for iframe refresh
-  const lastSyncedTime = useRef<number>(0)
+  const [isPlayerReady, setIsPlayerReady] = useState(false)
   const [position, setPosition] = useState<Position>(() => {
-    // Load position from localStorage or default to bottom-right
     const saved = localStorage.getItem(STORAGE_KEY)
     if (saved) {
       return JSON.parse(saved)
@@ -39,20 +106,84 @@ export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, o
   const [dragOffset, setDragOffset] = useState<Position>({ x: 0, y: 0 })
 
   const containerRef = useRef<HTMLDivElement>(null)
+  const playerRef = useRef<YTPlayer | null>(null)
+  const playerContainerRef = useRef<HTMLDivElement>(null)
+  const lastSyncedTime = useRef<number>(0)
 
-  // Sync playhead position (only on significant jumps > 5 seconds to trigger iframe refresh)
-  // This detects manual seeks vs normal playback progression
+  // Initialize YouTube player
   useEffect(() => {
+    if (!isVisible || isMinimized || !videoId) return
+
+    let mounted = true
+
+    loadYouTubeAPI().then(() => {
+      if (!mounted || !playerContainerRef.current) return
+
+      // Destroy existing player if any
+      if (playerRef.current) {
+        playerRef.current.destroy()
+        playerRef.current = null
+      }
+
+      playerRef.current = new window.YT.Player(playerContainerRef.current, {
+        videoId,
+        playerVars: {
+          autoplay: isPlaying ? 1 : 0,
+          controls: 0,
+          modestbranding: 1,
+          rel: 0,
+          showinfo: 0,
+          playsinline: 1,
+          start: Math.floor(currentTime),
+        },
+        events: {
+          onReady: () => {
+            if (!mounted) return
+            setIsPlayerReady(true)
+            // Always mute - main player handles audio
+            playerRef.current?.mute()
+            if (isPlaying) {
+              playerRef.current?.playVideo()
+            }
+          },
+        },
+      })
+    })
+
+    return () => {
+      mounted = false
+      if (playerRef.current) {
+        playerRef.current.destroy()
+        playerRef.current = null
+        setIsPlayerReady(false)
+      }
+    }
+  }, [isVisible, isMinimized, videoId]) // Recreate player when video changes
+
+  // Sync play/pause state
+  useEffect(() => {
+    if (!isPlayerReady || !playerRef.current) return
+
+    if (isPlaying) {
+      playerRef.current.playVideo()
+    } else {
+      playerRef.current.pauseVideo()
+    }
+  }, [isPlaying, isPlayerReady])
+
+  // Sync playhead position - smooth seeking without reload
+  useEffect(() => {
+    if (!isPlayerReady || !playerRef.current) return
+
     const timeDiff = Math.abs(currentTime - lastSyncedTime.current)
 
-    // Only sync on big jumps (manual seek), not normal playback
-    if (timeDiff > 5) {
-      setSyncedTime(Math.floor(currentTime))
+    // Seek if drift exceeds threshold (manual seek or significant drift)
+    if (timeDiff > SYNC_THRESHOLD) {
+      playerRef.current.seekTo(currentTime, true)
     }
 
-    // Always update ref to track current position
     lastSyncedTime.current = currentTime
-  }, [currentTime])
+  }, [currentTime, isPlayerReady])
 
   // Persist position to localStorage
   useEffect(() => {
@@ -205,12 +336,9 @@ export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, o
 
               {/* Video content or No Signal */}
               {videoId ? (
-                <iframe
-                  key={`${videoId}-${syncedTime}`}
-                  src={`https://www.youtube.com/embed/${videoId}?start=${syncedTime}&autoplay=${isPlaying ? 1 : 0}&mute=${isMuted ? 1 : 0}&controls=0&modestbranding=1&rel=0&showinfo=0&playsinline=1`}
+                <div
+                  ref={playerContainerRef}
                   className="w-full h-full"
-                  allow="autoplay; encrypted-media"
-                  allowFullScreen
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">

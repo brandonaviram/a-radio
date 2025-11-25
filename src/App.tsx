@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Radio, Volume2, VolumeX, Play, Pause, Star, SkipBack, SkipForward, Settings, Download, Upload, Tv } from 'lucide-react'
 import { useYouTubePlayer, extractVideoId } from './hooks/useYouTubePlayer'
 import { StorageManager } from './services/StorageManager'
@@ -6,8 +6,38 @@ import { ArchivistService } from './services/ArchivistService'
 import { SignalVisualizer, ArchivistLog, RetroTV } from './components'
 import { COPY } from './constants/microcopy'
 import { KEYBOARD_SHORTCUTS, SEEK_AMOUNT } from './constants/keyboard'
+import type { Frequency } from './services/StorageManager'
 
 type ViewMode = 'receiver' | 'settings'
+
+// Reusable frequency item component
+function FrequencyItem({
+  freq,
+  isActive,
+  onLoad,
+  badge,
+}: {
+  freq: Frequency
+  isActive: boolean
+  onLoad: () => void
+  badge?: string
+}) {
+  return (
+    <button
+      onClick={onLoad}
+      className={`w-full text-left p-3 border border-zinc-800 hover:border-zinc-700 flex items-center justify-between group ${
+        isActive ? 'border-amber-500/50 bg-amber-500/5' : ''
+      }`}
+    >
+      <span className="text-xs text-zinc-400 truncate flex-1 mr-4">
+        {freq.title}
+      </span>
+      {badge && (
+        <span className="text-[10px] text-amber-500/80">{badge}</span>
+      )}
+    </button>
+  )
+}
 
 function App() {
   const [playerState, controls] = useYouTubePlayer()
@@ -15,6 +45,11 @@ function App() {
   const [frequencies, setFrequencies] = useState(StorageManager.getAllFrequencies())
   const [currentTitle, setCurrentTitle] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('receiver')
+
+  // Smart categories (behavior-based)
+  const smartCategories = useMemo(() => {
+    return StorageManager.getSmartCategories()
+  }, [frequencies])
 
   // AI Archivist state
   const [archivistNotes, setArchivistNotes] = useState<string | null>(null)
@@ -26,6 +61,20 @@ function App() {
 
   // RetroTV state
   const [showTV, setShowTV] = useState(false)
+
+  // Session tracking for behavior-based ranking
+  const sessionStartTime = useRef<number | null>(null)
+  const sessionVideoId = useRef<string | null>(null)
+
+  // Record the current session (called when playback stops or video changes)
+  const recordCurrentSession = useCallback(() => {
+    if (sessionStartTime.current && sessionVideoId.current) {
+      const duration = Math.floor((Date.now() - sessionStartTime.current) / 1000)
+      StorageManager.recordSession(sessionVideoId.current, duration)
+      console.log(`[Session] Recorded ${duration}s for ${sessionVideoId.current}`)
+    }
+    sessionStartTime.current = null
+  }, [])
 
   // Check if current video is locked (favorited)
   const isLocked = playerState.videoId
@@ -284,6 +333,39 @@ function App() {
     }
   }, [])
 
+  // Track play/pause for session recording
+  useEffect(() => {
+    if (playerState.isPlaying && playerState.videoId) {
+      // Playback started - begin session
+      if (!sessionStartTime.current) {
+        sessionStartTime.current = Date.now()
+        sessionVideoId.current = playerState.videoId
+        console.log(`[Session] Started for ${playerState.videoId}`)
+      }
+    } else if (!playerState.isPlaying && sessionStartTime.current) {
+      // Playback stopped - record session
+      recordCurrentSession()
+    }
+  }, [playerState.isPlaying, playerState.videoId, recordCurrentSession])
+
+  // Record session when video changes
+  useEffect(() => {
+    // If video changes and we have an active session, record it
+    if (sessionVideoId.current && playerState.videoId !== sessionVideoId.current) {
+      recordCurrentSession()
+    }
+  }, [playerState.videoId, recordCurrentSession])
+
+  // Record session on page unload
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      recordCurrentSession()
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [recordCurrentSession])
+
   return (
     <div className="min-h-screen bg-black text-zinc-400 font-mono p-6 flex flex-col">
       {/* CRT Overlay */}
@@ -514,35 +596,99 @@ function App() {
               />
             )}
 
-            {/* Saved Frequencies */}
-            <section className="flex-1">
-              <div className="text-[10px] uppercase tracking-widest text-zinc-600 mb-3">
-                {COPY.SAVED_FREQUENCIES}
-              </div>
-              {frequencies.length === 0 ? (
-                <div className="text-xs text-zinc-700 italic">
-                  {COPY.NO_FREQUENCIES}
+            {/* Smart Categories - Behavior-Based Ranking */}
+            <section className="flex-1 space-y-6">
+              {/* Current Vibe - What you're into right now */}
+              {smartCategories.currentVibe.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-zinc-600 mb-2">
+                    CURRENT VIBE
+                  </div>
+                  <div className="space-y-1">
+                    {smartCategories.currentVibe.map((freq) => (
+                      <FrequencyItem
+                        key={`vibe-${freq.videoId}`}
+                        freq={freq}
+                        isActive={playerState.videoId === freq.videoId}
+                        onLoad={() => loadFrequency(freq.videoId)}
+                        badge={`${freq.sessions?.length || 0} plays`}
+                      />
+                    ))}
+                  </div>
                 </div>
-              ) : (
-                <div className="space-y-1">
-                  {frequencies.map((freq) => (
-                    <button
-                      key={freq.videoId}
-                      onClick={() => loadFrequency(freq.videoId)}
-                      className={`w-full text-left p-3 border border-zinc-800 hover:border-zinc-700 flex items-center justify-between group ${
-                        playerState.videoId === freq.videoId ? 'border-amber-500/50 bg-amber-500/5' : ''
-                      }`}
-                    >
-                      <span className="text-xs text-zinc-400 truncate flex-1 mr-4">
-                        {freq.title}
-                      </span>
-                      <div className="flex items-center gap-2 text-[10px] text-zinc-600">
-                        {freq.stars.length > 0 && (
-                          <span className="text-amber-500">{freq.stars.length} {COPY.PEAKS}</span>
-                        )}
-                      </div>
-                    </button>
-                  ))}
+              )}
+
+              {/* Heavy Rotation - Most frequently played */}
+              {smartCategories.heavyRotation.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-zinc-600 mb-2">
+                    HEAVY ROTATION
+                  </div>
+                  <div className="space-y-1">
+                    {smartCategories.heavyRotation.map((freq) => (
+                      <FrequencyItem
+                        key={`heavy-${freq.videoId}`}
+                        freq={freq}
+                        isActive={playerState.videoId === freq.videoId}
+                        onLoad={() => loadFrequency(freq.videoId)}
+                        badge={`${freq.sessions?.length || 0} plays`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Deep Listens - Longest total listen time */}
+              {smartCategories.deepListens.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-zinc-600 mb-2">
+                    DEEP LISTENS
+                  </div>
+                  <div className="space-y-1">
+                    {smartCategories.deepListens.map((freq) => {
+                      const totalSeconds = (freq.sessions || []).reduce((sum, s) => sum + s.duration, 0)
+                      const hours = Math.floor(totalSeconds / 3600)
+                      const minutes = Math.floor((totalSeconds % 3600) / 60)
+                      const timeLabel = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
+                      return (
+                        <FrequencyItem
+                          key={`deep-${freq.videoId}`}
+                          freq={freq}
+                          isActive={playerState.videoId === freq.videoId}
+                          onLoad={() => loadFrequency(freq.videoId)}
+                          badge={timeLabel}
+                        />
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* All Frequencies (fallback when no behavior data) */}
+              {smartCategories.currentVibe.length === 0 &&
+               smartCategories.heavyRotation.length === 0 &&
+               smartCategories.deepListens.length === 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-zinc-600 mb-2">
+                    {COPY.SAVED_FREQUENCIES}
+                  </div>
+                  {frequencies.length === 0 ? (
+                    <div className="text-xs text-zinc-700 italic">
+                      {COPY.NO_FREQUENCIES}
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      {frequencies.map((freq) => (
+                        <FrequencyItem
+                          key={freq.videoId}
+                          freq={freq}
+                          isActive={playerState.videoId === freq.videoId}
+                          onLoad={() => loadFrequency(freq.videoId)}
+                          badge={freq.stars.length > 0 ? `${freq.stars.length} ${COPY.PEAKS}` : undefined}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </section>
