@@ -197,9 +197,21 @@ function App() {
   // Mark signal (add star at current time)
   const markSignal = useCallback(() => {
     if (!playerState.videoId) return
-    StorageManager.addStar(playerState.videoId, playerState.currentTime)
-    setFrequencies(StorageManager.getAllFrequencies())
-  }, [playerState.videoId, playerState.currentTime])
+
+    // Must lock signal first before marking
+    if (!isLocked) {
+      console.warn('[markSignal] Cannot mark - frequency not locked. Lock signal first.')
+      return
+    }
+
+    try {
+      StorageManager.addStar(playerState.videoId, playerState.currentTime)
+      console.log(`[markSignal] Added star at ${playerState.currentTime}s for ${playerState.videoId}`)
+      setFrequencies(StorageManager.getAllFrequencies())
+    } catch (error) {
+      console.error('[markSignal] Failed:', error)
+    }
+  }, [playerState.videoId, playerState.currentTime, isLocked])
 
   // Peak navigation
   const navigateToPeak = useCallback((direction: 'prev' | 'next') => {
@@ -586,6 +598,7 @@ function App() {
 
                 {/* Signal Visualizer */}
                 <SignalVisualizer
+                  key={playerState.videoId}
                   currentTime={playerState.currentTime}
                   duration={playerState.duration}
                   peaks={currentPeaks}

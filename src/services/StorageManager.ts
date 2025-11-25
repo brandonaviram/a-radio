@@ -27,6 +27,10 @@ export interface Frequency {
   sessions: Session[]; // Track listening behavior
   archivistNotes?: string; // AI-generated museum note
   lastPlayedAt?: number;
+  // v4: Engagement tracking
+  skips: number; // Times user skipped this frequency
+  completions: number; // Times played to natural end
+  duration?: number; // Video duration in seconds (for completion rate)
 }
 
 export interface ApiConfig {
@@ -51,9 +55,18 @@ export interface RadioData {
 
 export class StorageManager {
   private static readonly STORAGE_KEY = 'aviram-radio-data';
-  private static readonly VERSION = 3; // v3: Added session tracking
+  private static readonly VERSION = 4; // v4: Engagement algorithm (skips, completions)
   private static readonly DEFAULT_WINDOW_SIZE = 30; // seconds
   private static readonly DEFAULT_PEAK_COUNT = 10;
+
+  // Engagement algorithm constants (from TikTok/implicit research)
+  private static readonly RECENCY_WEIGHT = 0.3;
+  private static readonly ENGAGEMENT_WEIGHT = 0.7;
+  private static readonly RECENCY_HALF_LIFE_HOURS = 168; // 1 week
+  private static readonly CONFIDENCE_ALPHA = 40;
+  private static readonly STAR_WEIGHT = 1.0;
+  private static readonly SKIP_WEIGHT = -0.3;
+  private static readonly COMPLETION_WEIGHT = 0.5;
 
   // ==========================================================================
   // Core CRUD
@@ -81,6 +94,11 @@ export class StorageManager {
       // Handle version migrations if needed
       if (data.version !== this.VERSION) {
         return this.migrate(data);
+      }
+
+      // Ensure archivistNotesCache exists (defensive, in case of corrupt data)
+      if (!data.archivistNotesCache) {
+        data.archivistNotesCache = {};
       }
 
       return data;
@@ -125,6 +143,8 @@ export class StorageManager {
       addedAt: Date.now(),
       stars: [],
       sessions: [],
+      skips: 0,
+      completions: 0,
     };
 
     data.frequencies.push(frequency);
@@ -265,17 +285,19 @@ export class StorageManager {
   // ==========================================================================
 
   /**
-   * Calculate peak timestamps where star density is highest
+   * Calculate peak regions where stars are clustered
    *
-   * Algorithm:
-   * 1. Slide a window across the video duration
-   * 2. Count stars within each window position
-   * 3. Find local maxima (peaks in density)
-   * 4. Return top N peaks sorted by density
+   * Algorithm (cluster-based):
+   * 1. Sort stars by timestamp
+   * 2. Group stars within windowSize of each other into clusters
+   * 3. Calculate center of each cluster (average timestamp)
+   * 4. Return cluster centers, sorted by cluster size (most stars = highest priority)
+   *
+   * This approach handles both clustered AND evenly-spread stars correctly.
    *
    * @param videoId - Video to analyze
-   * @param windowSize - Window size in seconds (default 30)
-   * @returns Array of peak timestamps sorted by density (highest first)
+   * @param windowSize - Maximum gap between stars in same cluster (default 30s)
+   * @returns Array of peak timestamps sorted by cluster size (largest first)
    */
   static calculatePeaks(videoId: string, windowSize: number = this.DEFAULT_WINDOW_SIZE): number[] {
     const stars = this.getStars(videoId);
@@ -284,62 +306,55 @@ export class StorageManager {
       return [];
     }
 
-    // Edge case: very few stars
+    // Edge case: very few stars - just return their timestamps
     if (stars.length <= 2) {
       return stars.map(s => s.timestamp);
     }
 
-    // Find video duration (max star timestamp + buffer)
-    const maxTimestamp = Math.max(...stars.map(s => s.timestamp));
-    const duration = maxTimestamp + windowSize;
+    // Sort stars by timestamp
+    const sortedStars = [...stars].sort((a, b) => a.timestamp - b.timestamp);
 
-    // Calculate density at each second
-    const densityMap = new Map<number, number>();
+    // Group stars into clusters (stars within windowSize of each other)
+    const clusters: Array<{ timestamps: number[] }> = [];
+    let currentCluster: number[] = [sortedStars[0].timestamp];
 
-    for (let position = 0; position <= duration; position++) {
-      const windowStart = position;
-      const windowEnd = position + windowSize;
+    for (let i = 1; i < sortedStars.length; i++) {
+      const gap = sortedStars[i].timestamp - sortedStars[i - 1].timestamp;
 
-      // Count stars within this window
-      const starsInWindow = stars.filter(
-        s => s.timestamp >= windowStart && s.timestamp < windowEnd
-      ).length;
-
-      densityMap.set(position, starsInWindow);
-    }
-
-    // Find local maxima (peaks)
-    const peaks: Array<{ timestamp: number; density: number }> = [];
-    const positions = Array.from(densityMap.keys()).sort((a, b) => a - b);
-
-    for (let i = 1; i < positions.length - 1; i++) {
-      const pos = positions[i];
-      const density = densityMap.get(pos)!;
-      const prevDensity = densityMap.get(positions[i - 1])!;
-      const nextDensity = densityMap.get(positions[i + 1])!;
-
-      // Local maximum: higher than neighbors
-      if (density > prevDensity && density > nextDensity && density > 0) {
-        peaks.push({ timestamp: pos, density });
+      if (gap <= windowSize) {
+        // Same cluster - add to current
+        currentCluster.push(sortedStars[i].timestamp);
+      } else {
+        // New cluster - save current and start new one
+        clusters.push({ timestamps: currentCluster });
+        currentCluster = [sortedStars[i].timestamp];
       }
     }
 
-    // Handle edge cases (start/end of video)
-    const firstDensity = densityMap.get(positions[0])!;
-    const lastDensity = densityMap.get(positions[positions.length - 1])!;
+    // Don't forget the last cluster
+    clusters.push({ timestamps: currentCluster });
 
-    if (firstDensity > 0) {
-      peaks.push({ timestamp: positions[0], density: firstDensity });
-    }
-    if (lastDensity > 0 && positions.length > 1) {
-      peaks.push({ timestamp: positions[positions.length - 1], density: lastDensity });
-    }
+    // Calculate center of each cluster and sort by size
+    const peaks = clusters.map(cluster => ({
+      // Center is the average of all timestamps in cluster
+      center: cluster.timestamps.reduce((a, b) => a + b, 0) / cluster.timestamps.length,
+      size: cluster.timestamps.length,
+    }));
 
-    // Sort by density (highest first) and return top N timestamps
-    return peaks
-      .sort((a, b) => b.density - a.density)
-      .slice(0, this.DEFAULT_PEAK_COUNT)
-      .map(p => p.timestamp);
+    // Sort by cluster size (most stars = highest priority)
+    // For ties, sort by timestamp (earlier first)
+    peaks.sort((a, b) => {
+      if (b.size !== a.size) return b.size - a.size;
+      return a.center - b.center;
+    });
+
+    // Get top N peaks by size, then sort by timestamp for navigation
+    const topPeaks = peaks.slice(0, this.DEFAULT_PEAK_COUNT);
+
+    // Re-sort by timestamp (chronological order for navigation)
+    topPeaks.sort((a, b) => a.center - b.center);
+
+    return topPeaks.map(p => Math.round(p.center)); // Round to nearest second
   }
 
   // ==========================================================================
@@ -352,6 +367,11 @@ export class StorageManager {
    */
   static setArchivistNotes(videoId: string, notes: string): void {
     const data = this.load();
+
+    // Ensure cache exists (in case of old data)
+    if (!data.archivistNotesCache) {
+      data.archivistNotesCache = {};
+    }
 
     // Store in separate cache (works for all videos)
     data.archivistNotesCache[videoId] = notes;
@@ -373,7 +393,8 @@ export class StorageManager {
     const data = this.load();
 
     // Check separate cache first (works for all videos)
-    if (data.archivistNotesCache[videoId]) {
+    // Use optional chaining in case archivistNotesCache is undefined (old data)
+    if (data.archivistNotesCache?.[videoId]) {
       return data.archivistNotesCache[videoId];
     }
 
@@ -591,6 +612,20 @@ export class StorageManager {
       }
     }
 
+    // v3 → v4: Add engagement tracking (skips, completions)
+    if (data.version < 4) {
+      console.log('[StorageManager] v3 → v4: Adding engagement tracking');
+
+      for (const freq of data.frequencies) {
+        if (freq.skips === undefined) {
+          freq.skips = 0;
+        }
+        if (freq.completions === undefined) {
+          freq.completions = 0;
+        }
+      }
+    }
+
     data.version = this.VERSION;
     this.save(data);
     return data;
@@ -762,6 +797,179 @@ export class StorageManager {
       heavyRotation: this.getHeavyRotation(),
       deepListens: this.getDeepListens(),
       currentVibe: this.getCurrentVibe(),
+    };
+  }
+
+  // ==========================================================================
+  // Engagement Algorithm (TikTok-style ranking)
+  // ==========================================================================
+
+  /**
+   * Record a skip (negative signal)
+   * Called when user presses N/skip before video ends
+   *
+   * Position-aware: skipping top items is a stronger negative signal
+   */
+  static recordSkip(videoId: string, position: number = 0): void {
+    const data = this.load();
+    const frequency = data.frequencies.find(f => f.videoId === videoId);
+
+    if (!frequency) {
+      console.warn(`[StorageManager] Cannot record skip: frequency ${videoId} not found`);
+      return;
+    }
+
+    // Position multiplier: top 3 positions penalized more (from Metarank research)
+    const positionMultiplier = position < 3 ? 2.0 : 1.0;
+    frequency.skips = (frequency.skips || 0) + positionMultiplier;
+
+    this.save(data);
+  }
+
+  /**
+   * Record a completion (strong positive signal)
+   * Called when video ends naturally (not skipped)
+   */
+  static recordCompletion(videoId: string): void {
+    const data = this.load();
+    const frequency = data.frequencies.find(f => f.videoId === videoId);
+
+    if (!frequency) {
+      console.warn(`[StorageManager] Cannot record completion: frequency ${videoId} not found`);
+      return;
+    }
+
+    frequency.completions = (frequency.completions || 0) + 1;
+    this.save(data);
+  }
+
+  /**
+   * Set video duration (needed for completion rate calculation)
+   * Called when video metadata is loaded
+   */
+  static setVideoDuration(videoId: string, duration: number): void {
+    const data = this.load();
+    const frequency = data.frequencies.find(f => f.videoId === videoId);
+
+    if (frequency) {
+      frequency.duration = duration;
+      this.save(data);
+    }
+  }
+
+  /**
+   * Calculate engagement score for a frequency
+   *
+   * Formula (from TikTok/implicit feedback research):
+   * confidence = 1 + α * (stars - skipWeight*skips + completionWeight*completions)
+   *
+   * @returns Confidence score (higher = more engaged)
+   */
+  static calculateConfidence(frequency: Frequency): number {
+    const stars = frequency.stars?.length || 0;
+    const skips = frequency.skips || 0;
+    const completions = frequency.completions || 0;
+    const plays = frequency.sessions?.length || 0;
+
+    // Calculate completion rate (0-1)
+    const completionRate = plays > 0 ? completions / plays : 0;
+
+    // Raw engagement: stars are positive, skips are negative, completions boost
+    const rawEngagement =
+      (stars * this.STAR_WEIGHT) +
+      (skips * this.SKIP_WEIGHT) +
+      (completionRate * this.COMPLETION_WEIGHT * plays);
+
+    // Confidence formula (from implicit feedback research)
+    return 1 + this.CONFIDENCE_ALPHA * Math.max(0, rawEngagement);
+  }
+
+  /**
+   * Calculate recency score (0-1)
+   * Newer items score higher, decays over 1 week
+   */
+  static calculateRecencyScore(addedAt: number): number {
+    const hoursSinceAdded = (Date.now() - addedAt) / 3600000;
+    return 1 / (1 + hoursSinceAdded / this.RECENCY_HALF_LIFE_HOURS);
+  }
+
+  /**
+   * Calculate final engagement score for a frequency
+   *
+   * Formula: score = (recencyWeight * recency) + (engagementWeight * normalizedConfidence)
+   *
+   * @param frequency - The frequency to score
+   * @param maxConfidence - Max confidence in collection (for normalization)
+   * @returns Final score (0-1 range)
+   */
+  static calculateEngagementScore(frequency: Frequency, maxConfidence: number): number {
+    const recency = this.calculateRecencyScore(frequency.addedAt);
+    const confidence = this.calculateConfidence(frequency);
+    const normalizedConfidence = maxConfidence > 0 ? confidence / maxConfidence : 0.5;
+
+    return (this.RECENCY_WEIGHT * recency) + (this.ENGAGEMENT_WEIGHT * normalizedConfidence);
+  }
+
+  /**
+   * Get frequencies ranked by engagement score
+   * This is the TikTok-style algorithm: starred content bubbles up
+   *
+   * @returns Frequencies sorted by engagement (highest first)
+   */
+  static getEngagementRankedFrequencies(): Frequency[] {
+    const data = this.load();
+    const frequencies = data.frequencies;
+
+    if (frequencies.length === 0) {
+      return [];
+    }
+
+    // Find max confidence for normalization
+    const maxConfidence = Math.max(
+      1,
+      ...frequencies.map(f => this.calculateConfidence(f))
+    );
+
+    // Score and sort
+    const scored = frequencies.map(f => ({
+      frequency: f,
+      score: this.calculateEngagementScore(f, maxConfidence),
+    }));
+
+    return scored
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.frequency);
+  }
+
+  /**
+   * Get engagement stats for debugging/display
+   */
+  static getEngagementStats(videoId: string): {
+    stars: number;
+    skips: number;
+    completions: number;
+    plays: number;
+    confidence: number;
+    recency: number;
+    score: number;
+  } | null {
+    const frequency = this.getFrequency(videoId);
+    if (!frequency) return null;
+
+    const data = this.load();
+    const maxConfidence = Math.max(
+      1,
+      ...data.frequencies.map(f => this.calculateConfidence(f))
+    );
+
+    return {
+      stars: frequency.stars?.length || 0,
+      skips: frequency.skips || 0,
+      completions: frequency.completions || 0,
+      plays: frequency.sessions?.length || 0,
+      confidence: this.calculateConfidence(frequency),
+      recency: this.calculateRecencyScore(frequency.addedAt),
+      score: this.calculateEngagementScore(frequency, maxConfidence),
     };
   }
 }

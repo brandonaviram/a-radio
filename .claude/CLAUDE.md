@@ -49,16 +49,53 @@ Uses radio/signal interceptor language:
 
 ## Architecture Decisions
 
-### RetroTV Component - YouTube Sync
-- **Decision**: Use iframe with URL params + key prop for syncing
-- **Rationale**: YouTube IFrame API had race conditions in React; simpler approach more reliable
-- **Pattern**: Change `key` prop to force iframe reload on significant seeks (>5 seconds)
-- **Trade-off**: Brief reload flash vs complex API management
+### RetroTV Component - YouTube Sync (Updated)
+- **Decision**: Use YouTube IFrame API with `player.seekTo()` for smooth sync
+- **Rationale**: Iframe reload approach caused jarring visual flicker on seeks
+- **Evolution**: Started with iframe + key prop (simple but flickery) → switched to IFrame API (smooth)
+- **Pattern**: API calls (`seekTo`, `playVideo`, `pauseVideo`) instead of iframe reload
+- **Key insight**: User feedback "drift correction sucks bc it reloads the video" drove this change
 
 ### Seek Detection Algorithm
-- **Decision**: Track `lastSyncedTime.current` and only sync on jumps > 5 seconds
+- **Decision**: Track `lastSyncedTime.current` and only sync on jumps > 2 seconds
 - **Rationale**: Differentiates manual seeks from normal playback progression
 - **Key insight**: Must update tracking ref on EVERY time change, not just syncs (caused reload loop bug)
+
+### Behavior-Based Ranking ("What Fills Your Cup")
+- **Decision**: Track listening sessions, not just explicit stars/bookmarks
+- **Rationale**: For solo operators, stars don't mean much; actual behavior reveals what content matters
+- **Categories**:
+  - **Current Vibe**: Recent + frequent (last 7 days, recency-weighted)
+  - **Heavy Rotation**: Most frequently played (play count)
+  - **Deep Listens**: Longest total listen time
+- **Session tracking**: Records duration on pause, video change, and page unload
+- **Insight**: User asked "what does [stars] represent for a solo operator?" - led to behavior-based approach
+
+### TikTok-Style Engagement Algorithm (v4)
+- **Decision**: Unified engagement score that bubbles up favorites automatically
+- **Rationale**: Research from ByteDance Monolith, benfred/implicit, and Metarank showed simple formulas work
+- **Formula**:
+  ```
+  score = (0.3 × recency) + (0.7 × engagement)
+
+  Where:
+  - recency = 1 / (1 + hours_since_added / 168)  // Decays over 1 week
+  - engagement = 1 + 40 × (stars - 0.3×skips + 0.5×completionRate×plays)
+  ```
+- **Signals tracked**:
+  - **Stars** (weight: +1.0) - Explicit positive feedback
+  - **Skips** (weight: -0.3) - Negative signal, position-aware (top 3 = 2x penalty)
+  - **Completions** (weight: +0.5) - Strong implicit positive
+- **Key insight**: Real-time updates, not batch processing - when you star, queue reorders immediately
+- **Strategy doc**: `doc/dj-set-tracker-algorithm-strategy.md`
+
+### Playback Position Persistence
+- **Decision**: Save position every 5 seconds + on unload, restore on load
+- **Rationale**: User expected to resume where they left off after refresh
+- **Implementation**:
+  - `StorageManager.getLastPosition()` / `setLastPosition()`
+  - `loadVideo(videoId, startTime)` uses YouTube's `startSeconds` param
+- **Critical bug fixed**: Effect must wait for `playerState.isReady` before loading video
 
 ### API Config Persistence
 - **Decision**: Store API key and provider in localStorage via StorageManager
@@ -106,15 +143,19 @@ Floating draggable picture-in-picture monitor:
 Handles all localStorage operations:
 - Frequencies (saved videos)
 - Stars (bookmarks within videos)
+- Sessions (listening behavior tracking)
 - Peaks (calculated from star density)
 - Archivist notes cache
-- Settings (volume, last video, API config)
+- Settings (volume, last video, last position, API config)
+- Smart categories: `getHeavyRotation()`, `getDeepListens()`, `getCurrentVibe()`
+- Data versioning with migrations (currently v3)
 
 ### ArchivistService (`src/services/ArchivistService.ts`)
 AI-powered content analysis:
-- Fetches video metadata via YouTube oEmbed
+- Fetches video metadata via YouTube oEmbed (cached in-memory per session)
 - Generates "museum placard" style notes via OpenAI/Anthropic
-- Caches results in StorageManager
+- Caches AI notes in StorageManager (persists across sessions)
+- **Caching strategy**: oEmbed = session cache (Map), AI notes = localStorage
 
 ## Workflow Patterns
 
@@ -135,9 +176,19 @@ AI-powered content analysis:
 **Cause**: Title fetch was inside "isConfigured" check, skipped when no API key
 **Fix**: Fetch title first (oEmbed needs no API), then check for AI notes
 
+#### Video Not Loading on Refresh
+**Symptom**: Page loads but video doesn't restore after refresh
+**Cause**: Effect to load video runs before `playerState.isReady` is true
+**Fix**: Add `playerState.isReady` to effect dependencies, use `hasLoadedInitialVideo` ref to prevent duplicate loads
+
+#### Null Sessions Array Crash
+**Symptom**: `Cannot read properties of undefined (reading 'length')` on load
+**Cause**: Existing frequencies in localStorage don't have `sessions` array (pre-v3 data)
+**Fix**: Add null checks (`f.sessions || []`) in all session-related methods + migration
+
 ## Session History
 
-### 2025-11-24 - RetroTV Component
+### 2025-11-24 - RetroTV Component (Session 1)
 - Created floating draggable CRT-style monitor
 - Implemented player sync (video, play state, mute, seek)
 - Fixed reload loop bug (time tracking)
@@ -145,13 +196,59 @@ AI-powered content analysis:
 - Created styleguide.md documenting design system
 - Fixed video title fetch (always use oEmbed)
 
+### 2025-11-24 - Behavior-Based Ranking + Polish (Session 2)
+- Implemented behavior-based frequency ranking (sessions, smart categories)
+- Upgraded RetroTV from iframe reload to YouTube IFrame API for smooth seeking
+- Added playback position persistence (save every 5s, restore on load)
+- Fixed timing bug: wait for player ready before loading initial video
+- Added API caching: oEmbed in-memory, AI notes in localStorage
+- Key user feedback: "drift correction sucks bc it reloads the video" → smooth API approach
+
+### 2025-11-25 - TikTok-Style Engagement Algorithm (Session 3)
+- Researched ByteDance Monolith, benfred/implicit, Metarank for algorithm patterns
+- Added engagement tracking fields: `skips`, `completions`, `duration` to Frequency
+- Implemented v4 migration (initializes new fields for existing data)
+- Added new methods:
+  - `recordSkip(videoId, position)` - Position-aware negative signal
+  - `recordCompletion(videoId)` - Strong positive signal
+  - `calculateConfidence(frequency)` - Raw engagement score
+  - `calculateEngagementScore(frequency)` - Final weighted score
+  - `getEngagementRankedFrequencies()` - Queue sorted by engagement
+  - `getEngagementStats(videoId)` - Debug/display stats
+- Formula: `score = 0.3×recency + 0.7×engagement`
+- Key insight: Dead-simple math from research (no ML needed, just weighted averages)
+- Strategy doc created: `doc/dj-set-tracker-algorithm-strategy.md`
+
 ## Important Context
 
 ### YouTube Integration
-- Main player uses custom `useYouTubePlayer` hook
-- RetroTV uses iframe embeds (simpler, fewer race conditions)
-- oEmbed endpoint for metadata (no API key required)
+- Main player uses custom `useYouTubePlayer` hook (IFrame API)
+- RetroTV also uses IFrame API (upgraded from simple iframe for smooth sync)
+- oEmbed endpoint for metadata (no API key required, cached per session)
 - Video IDs extracted via regex from various YouTube URL formats
+- `loadVideoById({ videoId, startSeconds })` for position restore
+
+### Data Model (v4)
+```typescript
+interface Frequency {
+  videoId: string;
+  title: string;
+  addedAt: number;
+  stars: Star[];
+  sessions: Session[];  // v3: behavior tracking
+  archivistNotes?: string;
+  lastPlayedAt?: number;
+  // v4: Engagement algorithm
+  skips: number;        // Times user skipped
+  completions: number;  // Times played to end
+  duration?: number;    // Video duration (for completion rate)
+}
+
+interface Session {
+  startedAt: number;
+  duration: number;  // seconds
+}
+```
 
 ### localStorage Keys
 - `aviram-radio-data` - Main data store (frequencies, settings, cache)

@@ -94,13 +94,13 @@ export const SignalVisualizer: React.FC<SignalVisualizerProps> = ({
           />
 
           {/* Star Markers */}
-          {stars.map((star, index) => {
+          {stars.map((star) => {
             const position = duration > 0 ? (star.timestamp / duration) * 100 : 0;
             const isStarPeak = isPeak(star.timestamp);
 
             return (
               <div
-                key={index}
+                key={`star-${star.timestamp}`}
                 className={`absolute top-1/2 -translate-y-1/2 ${
                   isStarPeak
                     ? 'w-1 h-3 peak-marker'
