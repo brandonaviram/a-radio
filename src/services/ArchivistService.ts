@@ -67,6 +67,8 @@ Example output:
 
 export class ArchivistService {
   private static config: ArchivistConfig | null = null;
+  // In-memory cache for oEmbed metadata (persists for session)
+  private static metadataCache: Map<string, VideoMetadata> = new Map();
 
   /**
    * Configure the Archivist with API credentials
@@ -92,8 +94,16 @@ export class ArchivistService {
 
   /**
    * Fetch video metadata from YouTube using oEmbed endpoint (no API key needed)
+   * Results are cached in memory to avoid redundant API calls
    */
   static async fetchVideoMetadata(videoId: string): Promise<VideoMetadata> {
+    // Check cache first
+    const cached = this.metadataCache.get(videoId);
+    if (cached) {
+      console.log(`[Archivist] Using cached metadata for: ${videoId}`);
+      return cached;
+    }
+
     try {
       const url = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
       const response = await fetch(url);
@@ -104,12 +114,18 @@ export class ArchivistService {
 
       const data: YouTubeOEmbedResponse = await response.json();
 
-      return {
+      const metadata: VideoMetadata = {
         videoId,
         title: data.title,
         description: `By ${data.author_name}`,
         tags: [],
       };
+
+      // Cache the result
+      this.metadataCache.set(videoId, metadata);
+      console.log(`[Archivist] Cached metadata for: ${videoId}`);
+
+      return metadata;
     } catch (error) {
       console.error('[Archivist] Failed to fetch video metadata:', error);
       return {

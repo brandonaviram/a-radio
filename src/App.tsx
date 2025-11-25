@@ -307,14 +307,22 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [controls, markSignal, toggleLock, navigateToPeak])
 
-  // Load last video on mount
+  // Load last video and position when player becomes ready
+  const hasLoadedInitialVideo = useRef(false)
   useEffect(() => {
+    // Only load once, and only when player is ready
+    if (!playerState.isReady || hasLoadedInitialVideo.current) return
+
     const lastVideoId = StorageManager.getLastVideoId()
+    const lastPosition = StorageManager.getLastPosition()
     if (lastVideoId) {
-      controls.loadVideo(lastVideoId)
+      hasLoadedInitialVideo.current = true
+      // Pass start time directly to loadVideo
+      controls.loadVideo(lastVideoId, lastPosition > 0 ? lastPosition : undefined)
       fetchArchivistNotes(lastVideoId)
+      console.log(`[App] Restored video ${lastVideoId} at position ${lastPosition}`)
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [playerState.isReady, controls, fetchArchivistNotes])
 
   // Initialize volume from storage
   useEffect(() => {
@@ -356,15 +364,30 @@ function App() {
     }
   }, [playerState.videoId, recordCurrentSession])
 
-  // Record session on page unload
+  // Record session and save position on page unload
   useEffect(() => {
     const handleBeforeUnload = () => {
       recordCurrentSession()
+      // Save current position
+      if (playerState.videoId && playerState.currentTime > 0) {
+        StorageManager.setLastPosition(playerState.currentTime)
+      }
     }
 
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [recordCurrentSession])
+  }, [recordCurrentSession, playerState.videoId, playerState.currentTime])
+
+  // Save playback position periodically (every 5 seconds while playing)
+  useEffect(() => {
+    if (!playerState.isPlaying || !playerState.videoId) return
+
+    const interval = setInterval(() => {
+      StorageManager.setLastPosition(playerState.currentTime)
+    }, 5000)
+
+    return () => clearInterval(interval)
+  }, [playerState.isPlaying, playerState.videoId, playerState.currentTime])
 
   return (
     <div className="min-h-screen bg-black text-zinc-400 font-mono p-6 flex flex-col">

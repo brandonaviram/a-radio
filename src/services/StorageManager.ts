@@ -395,6 +395,23 @@ export class StorageManager {
   }
 
   /**
+   * Get last playback position (in seconds)
+   */
+  static getLastPosition(): number {
+    const data = this.load();
+    return (data.settings as { lastPosition?: number }).lastPosition || 0;
+  }
+
+  /**
+   * Set last playback position (in seconds)
+   */
+  static setLastPosition(position: number): void {
+    const data = this.load();
+    (data.settings as { lastPosition?: number }).lastPosition = position;
+    this.save(data);
+  }
+
+  /**
    * Get saved API configuration
    */
   static getApiConfig(): ApiConfig | null {

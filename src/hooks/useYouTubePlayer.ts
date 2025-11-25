@@ -44,7 +44,7 @@ interface YTPlayer {
   mute(): void;
   unMute(): void;
   isMuted(): boolean;
-  loadVideoById(videoId: string): void;
+  loadVideoById(options: { videoId: string; startSeconds?: number }): void;
   destroy(): void;
 }
 
@@ -83,7 +83,7 @@ export interface PlayerState {
 
 // Player controls
 export interface PlayerControls {
-  loadVideo: (videoId: string) => void;
+  loadVideo: (videoId: string, startTime?: number) => void;
   togglePlayPause: () => void;
   seek: (seconds: number) => void;
   seekTo: (timestamp: number) => void;
@@ -331,7 +331,7 @@ export function useYouTubePlayer(): [PlayerState, PlayerControls] {
   };
 
   // Controls
-  const loadVideo = useCallback((videoId: string) => {
+  const loadVideo = useCallback((videoId: string, startTime?: number) => {
     if (!playerRef.current || !state.isReady) return;
 
     const id = extractVideoId(videoId);
@@ -339,7 +339,10 @@ export function useYouTubePlayer(): [PlayerState, PlayerControls] {
 
     dispatch({ type: 'SET_VIDEO_ID', payload: id });
     dispatch({ type: 'SET_STATUS', payload: 'scanning' });
-    playerRef.current.loadVideoById(id);
+    playerRef.current.loadVideoById({
+      videoId: id,
+      startSeconds: startTime || 0,
+    });
   }, [state.isReady]);
 
   const togglePlayPause = useCallback(() => {
