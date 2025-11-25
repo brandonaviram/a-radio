@@ -23,12 +23,18 @@ export interface Frequency {
   lastPlayedAt?: number;
 }
 
+export interface ApiConfig {
+  apiKey: string;
+  provider: 'openai' | 'anthropic';
+}
+
 export interface RadioData {
   frequencies: Frequency[];
   archivistNotesCache: Record<string, string>; // videoId → notes (works for all videos)
   settings: {
     volume: number;
     lastVideoId?: string;
+    apiConfig?: ApiConfig; // Persisted API credentials
   };
   version: number; // for future migrations
 }
@@ -378,6 +384,32 @@ export class StorageManager {
   static setLastVideoId(videoId: string): void {
     const data = this.load();
     data.settings.lastVideoId = videoId;
+    this.save(data);
+  }
+
+  /**
+   * Get saved API configuration
+   */
+  static getApiConfig(): ApiConfig | null {
+    const data = this.load();
+    return data.settings.apiConfig || null;
+  }
+
+  /**
+   * Save API configuration (key + provider)
+   */
+  static setApiConfig(config: ApiConfig): void {
+    const data = this.load();
+    data.settings.apiConfig = config;
+    this.save(data);
+  }
+
+  /**
+   * Clear API configuration
+   */
+  static clearApiConfig(): void {
+    const data = this.load();
+    delete data.settings.apiConfig;
     this.save(data);
   }
 

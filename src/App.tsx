@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Radio, Volume2, VolumeX, Play, Pause, Star, SkipBack, SkipForward, Settings, Download, Upload } from 'lucide-react'
+import { Radio, Volume2, VolumeX, Play, Pause, Star, SkipBack, SkipForward, Settings, Download, Upload, Tv } from 'lucide-react'
 import { useYouTubePlayer, extractVideoId } from './hooks/useYouTubePlayer'
 import { StorageManager } from './services/StorageManager'
 import { ArchivistService } from './services/ArchivistService'
-import { SignalVisualizer, ArchivistLog } from './components'
+import { SignalVisualizer, ArchivistLog, RetroTV } from './components'
 import { COPY } from './constants/microcopy'
 import { KEYBOARD_SHORTCUTS, SEEK_AMOUNT } from './constants/keyboard'
 
@@ -23,6 +23,9 @@ function App() {
   // Settings state
   const [apiKey, setApiKey] = useState('')
   const [apiProvider, setApiProvider] = useState<'openai' | 'anthropic'>('anthropic')
+
+  // RetroTV state
+  const [showTV, setShowTV] = useState(false)
 
   // Check if current video is locked (favorited)
   const isLocked = playerState.videoId
@@ -51,15 +54,24 @@ function App() {
     }
   }
 
-  // Fetch AI notes for current video
+  // Fetch video title and AI notes for current video
   const fetchArchivistNotes = useCallback(async (videoId: string) => {
-    // Check cache first
+    // Always fetch title first (oEmbed doesn't need API key)
+    try {
+      const metadata = await ArchivistService.fetchVideoMetadata(videoId)
+      setCurrentTitle(metadata.title || null)
+    } catch (error) {
+      console.error('Failed to fetch video title:', error)
+    }
+
+    // Check cache for AI notes
     const cached = StorageManager.getArchivistNotes(videoId)
     if (cached) {
       setArchivistNotes(cached)
       return
     }
 
+    // Only generate AI notes if configured
     if (!ArchivistService.isConfigured()) {
       setArchivistNotes('// ARCHIVIST OFFLINE - CONFIGURE API KEY')
       return
@@ -70,8 +82,6 @@ function App() {
 
     try {
       const metadata = await ArchivistService.fetchVideoMetadata(videoId)
-      setCurrentTitle(metadata.title || null)
-
       const notes = await ArchivistService.generateNotes(metadata)
       setArchivistNotes(notes)
 
@@ -150,13 +160,15 @@ function App() {
     }
   }, [currentPeaks, playerState.currentTime, controls])
 
-  // Configure Archivist
+  // Configure Archivist and persist to storage
   const configureArchivist = useCallback(() => {
     if (apiKey.trim()) {
-      ArchivistService.configure({
+      const config = {
         apiKey: apiKey.trim(),
         provider: apiProvider
-      })
+      }
+      ArchivistService.configure(config)
+      StorageManager.setApiConfig(config) // Persist to localStorage
       setViewMode('receiver')
 
       // Re-fetch notes if we have a video
@@ -261,10 +273,31 @@ function App() {
     controls.setVolume(savedVolume * 100)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Load API config from storage on mount
+  useEffect(() => {
+    const savedConfig = StorageManager.getApiConfig()
+    if (savedConfig) {
+      setApiKey(savedConfig.apiKey)
+      setApiProvider(savedConfig.provider)
+      ArchivistService.configure(savedConfig)
+      console.log('[App] Loaded API config from storage')
+    }
+  }, [])
+
   return (
     <div className="min-h-screen bg-black text-zinc-400 font-mono p-6 flex flex-col">
       {/* CRT Overlay */}
       <div className="crt-overlay" />
+
+      {/* Retro TV Monitor - Synced with main player */}
+      <RetroTV
+        videoId={playerState.videoId}
+        isPlaying={playerState.isPlaying}
+        isMuted={playerState.isMuted}
+        currentTime={playerState.currentTime}
+        isVisible={showTV}
+        onClose={() => setShowTV(false)}
+      />
 
       {/* Header */}
       <header className="flex items-center justify-between mb-8 border-b border-zinc-800 pb-4">
@@ -281,6 +314,13 @@ function App() {
               {getStatusText()}
             </span>
           </div>
+          <button
+            onClick={() => setShowTV(!showTV)}
+            className={`p-2 ${showTV ? 'text-amber-500' : 'text-zinc-600 hover:text-zinc-400'}`}
+            title="Toggle Monitor"
+          >
+            <Tv className="w-4 h-4" strokeWidth={1.5} />
+          </button>
           <button
             onClick={() => setViewMode(viewMode === 'settings' ? 'receiver' : 'settings')}
             className={`p-2 ${viewMode === 'settings' ? 'text-amber-500' : 'text-zinc-600 hover:text-zinc-400'}`}
