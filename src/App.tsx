@@ -170,13 +170,26 @@ function App() {
   }
 
   // Toggle signal lock (favorite)
-  const toggleLock = useCallback(() => {
+  const toggleLock = useCallback(async () => {
     if (!playerState.videoId) return
 
     if (isLocked) {
       StorageManager.removeFrequency(playerState.videoId)
     } else {
-      StorageManager.addFrequency(playerState.videoId, currentTitle || `Frequency ${playerState.videoId}`)
+      // Ensure we have the title before saving - fetch if not available
+      let title = currentTitle
+      if (!title) {
+        try {
+          const metadata = await ArchivistService.fetchVideoMetadata(playerState.videoId)
+          title = metadata.title || null
+          if (title) {
+            setCurrentTitle(title)
+          }
+        } catch (error) {
+          console.error('Failed to fetch title for lock:', error)
+        }
+      }
+      StorageManager.addFrequency(playerState.videoId, title || `Frequency ${playerState.videoId}`)
     }
     setFrequencies(StorageManager.getAllFrequencies())
   }, [playerState.videoId, isLocked, currentTitle])
@@ -339,6 +352,33 @@ function App() {
       ArchivistService.configure(savedConfig)
       console.log('[App] Loaded API config from storage')
     }
+  }, [])
+
+  // Fix frequencies with bad/placeholder titles on startup
+  useEffect(() => {
+    const fixBadTitles = async () => {
+      const badTitleFreqs = StorageManager.getFrequenciesWithBadTitles()
+      if (badTitleFreqs.length === 0) return
+
+      console.log(`[App] Fixing ${badTitleFreqs.length} frequencies with bad titles...`)
+
+      for (const freq of badTitleFreqs) {
+        try {
+          const metadata = await ArchivistService.fetchVideoMetadata(freq.videoId)
+          if (metadata.title && metadata.title !== 'Unknown') {
+            StorageManager.updateFrequencyTitle(freq.videoId, metadata.title)
+            console.log(`[App] Fixed title for ${freq.videoId}: ${metadata.title}`)
+          }
+        } catch (error) {
+          console.error(`[App] Failed to fix title for ${freq.videoId}:`, error)
+        }
+      }
+
+      // Refresh frequencies state after fixing
+      setFrequencies(StorageManager.getAllFrequencies())
+    }
+
+    fixBadTitles()
   }, [])
 
   // Track play/pause for session recording

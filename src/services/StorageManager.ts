@@ -178,6 +178,32 @@ export class StorageManager {
     }
   }
 
+  /**
+   * Update a frequency's title
+   * Used to fix frequencies that were saved with placeholder titles
+   */
+  static updateFrequencyTitle(videoId: string, title: string): boolean {
+    const data = this.load();
+    const frequency = data.frequencies.find(f => f.videoId === videoId);
+    if (frequency) {
+      frequency.title = title;
+      this.save(data);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get frequencies that have placeholder titles (need fixing)
+   * These are titles that start with "Frequency " followed by the videoId
+   */
+  static getFrequenciesWithBadTitles(): Frequency[] {
+    const data = this.load();
+    return data.frequencies.filter(f =>
+      f.title.startsWith('Frequency ') || f.title === 'Unknown'
+    );
+  }
+
   // ==========================================================================
   // Star Operations
   // ==========================================================================
