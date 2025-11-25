@@ -59,33 +59,41 @@ const TV_HEIGHT = 240
 const MINIMIZED_SIZE = 48
 const SYNC_THRESHOLD = 2 // seconds - seek if drift exceeds this
 
-// Load YouTube IFrame API script once
-let apiLoaded = false
-let apiReady = false
-const apiReadyCallbacks: (() => void)[] = []
-
+// Load YouTube IFrame API script - reuses if already loaded by main player
 function loadYouTubeAPI(): Promise<void> {
   return new Promise((resolve) => {
-    if (apiReady) {
+    // Check if API is already loaded (by main player or previous call)
+    if (window.YT && window.YT.Player) {
       resolve()
       return
     }
 
-    apiReadyCallbacks.push(resolve)
+    // API not loaded yet, wait for it
+    // The main player should load it, but if not, we'll add our own script
+    const existingScript = document.querySelector('script[src*="youtube.com/iframe_api"]')
 
-    if (!apiLoaded) {
-      apiLoaded = true
+    if (!existingScript) {
       const tag = document.createElement('script')
       tag.src = 'https://www.youtube.com/iframe_api'
       const firstScriptTag = document.getElementsByTagName('script')[0]
       firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag)
-
-      window.onYouTubeIframeAPIReady = () => {
-        apiReady = true
-        apiReadyCallbacks.forEach((cb) => cb())
-        apiReadyCallbacks.length = 0
-      }
     }
+
+    // Poll for API readiness (handles race condition with main player)
+    const checkReady = setInterval(() => {
+      if (window.YT && window.YT.Player) {
+        clearInterval(checkReady)
+        resolve()
+      }
+    }, 50)
+
+    // Timeout after 10 seconds
+    setTimeout(() => {
+      clearInterval(checkReady)
+      if (window.YT && window.YT.Player) {
+        resolve()
+      }
+    }, 10000)
   })
 }
 
