@@ -1,33 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Power, VolumeX, Minimize2, X } from 'lucide-react'
 
-// YouTube IFrame API types
-declare global {
-  interface Window {
-    YT: {
-      Player: new (
-        elementId: string | HTMLElement,
-        config: {
-          videoId?: string
-          playerVars?: Record<string, number | string>
-          events?: {
-            onReady?: (event: { target: YTPlayer }) => void
-            onStateChange?: (event: { data: number }) => void
-          }
-        }
-      ) => YTPlayer
-      PlayerState: {
-        PLAYING: number
-        PAUSED: number
-        BUFFERING: number
-        ENDED: number
-      }
-    }
-    onYouTubeIframeAPIReady?: () => void
-  }
-}
-
-interface YTPlayer {
+// YouTube player type (compatible with main hook's YTPlayer)
+interface YTPlayerLocal {
   playVideo: () => void
   pauseVideo: () => void
   seekTo: (seconds: number, allowSeekAhead?: boolean) => void
@@ -114,7 +89,7 @@ export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, o
   const [dragOffset, setDragOffset] = useState<Position>({ x: 0, y: 0 })
 
   const containerRef = useRef<HTMLDivElement>(null)
-  const playerRef = useRef<YTPlayer | null>(null)
+  const playerRef = useRef<YTPlayerLocal | null>(null)
   const playerContainerRef = useRef<HTMLDivElement>(null)
   const lastSyncedTime = useRef<number>(0)
 
@@ -133,16 +108,20 @@ export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, o
         playerRef.current = null
       }
 
-      playerRef.current = new window.YT.Player(playerContainerRef.current, {
+      // YouTube API needs a string ID, not the element
+      const playerId = 'retro-tv-player'
+      if (playerContainerRef.current) {
+        playerContainerRef.current.id = playerId
+      }
+
+      playerRef.current = new window.YT.Player(playerId, {
         videoId,
         playerVars: {
           autoplay: isPlaying ? 1 : 0,
           controls: 0,
           modestbranding: 1,
           rel: 0,
-          showinfo: 0,
           playsinline: 1,
-          start: Math.floor(currentTime),
         },
         events: {
           onReady: () => {
@@ -150,12 +129,16 @@ export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, o
             setIsPlayerReady(true)
             // Always mute - main player handles audio
             playerRef.current?.mute()
+            // Seek to current time
+            if (currentTime > 0) {
+              playerRef.current?.seekTo(currentTime, true)
+            }
             if (isPlaying) {
               playerRef.current?.playVideo()
             }
           },
         },
-      })
+      }) as unknown as YTPlayerLocal
     })
 
     return () => {
