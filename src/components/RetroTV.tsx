@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Power, VolumeX, Minimize2, X } from 'lucide-react'
+import { Power, VolumeX, Minimize2, X, Cloud } from 'lucide-react'
+import type { AudioSource } from '../types/player'
 
 // YouTube player type (compatible with main hook's YTPlayer)
 interface YTPlayerLocal {
@@ -21,6 +22,7 @@ interface RetroTVProps {
   currentTime: number
   isVisible: boolean
   onClose: () => void
+  source?: AudioSource // Optional - defaults to 'youtube'
 }
 
 interface Position {
@@ -72,7 +74,8 @@ function loadYouTubeAPI(): Promise<void> {
   })
 }
 
-export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, onClose }: RetroTVProps) {
+export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, onClose, source = 'youtube' }: RetroTVProps) {
+  const isYouTube = source === 'youtube'
   const [isMinimized, setIsMinimized] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [isPlayerReady, setIsPlayerReady] = useState(false)
@@ -93,9 +96,10 @@ export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, o
   const playerContainerRef = useRef<HTMLDivElement>(null)
   const lastSyncedTime = useRef<number>(0)
 
-  // Initialize YouTube player
+  // Initialize YouTube player (only for YouTube sources)
   useEffect(() => {
-    if (!isVisible || isMinimized || !videoId) return
+    // Skip player initialization for non-YouTube sources
+    if (!isYouTube || !isVisible || isMinimized || !videoId) return
 
     let mounted = true
 
@@ -149,7 +153,7 @@ export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, o
         setIsPlayerReady(false)
       }
     }
-  }, [isVisible, isMinimized, videoId]) // Recreate player when video changes
+  }, [isYouTube, isVisible, isMinimized, videoId]) // Recreate player when video changes
 
   // Sync play/pause state
   useEffect(() => {
@@ -325,12 +329,40 @@ export function RetroTV({ videoId, isPlaying, isMuted, currentTime, isVisible, o
                 }}
               />
 
-              {/* Video content or No Signal */}
+              {/* Video content, Audio Only, or No Signal */}
               {videoId ? (
-                <div
-                  ref={playerContainerRef}
-                  className="w-full h-full"
-                />
+                isYouTube ? (
+                  <div
+                    ref={playerContainerRef}
+                    className="w-full h-full"
+                  />
+                ) : (
+                  // Audio-only placeholder for SoundCloud
+                  <div className="w-full h-full flex flex-col items-center justify-center gap-3">
+                    <Cloud
+                      className={`w-12 h-12 ${isPlaying ? 'text-amber-500/60' : 'text-zinc-700'}`}
+                      strokeWidth={1}
+                    />
+                    <span className="text-[10px] text-zinc-600 uppercase tracking-widest">
+                      AUDIO ONLY
+                    </span>
+                    {/* Simple pulsing animation when playing */}
+                    {isPlaying && (
+                      <div className="flex gap-1">
+                        {[0, 1, 2, 3, 4].map((i) => (
+                          <div
+                            key={i}
+                            className="w-1 bg-amber-500/60"
+                            style={{
+                              height: `${8 + Math.sin(Date.now() / 200 + i) * 6}px`,
+                              animation: `pulse 0.5s ease-in-out ${i * 0.1}s infinite alternate`
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
                   <span className="text-[10px] text-zinc-700 uppercase tracking-widest">

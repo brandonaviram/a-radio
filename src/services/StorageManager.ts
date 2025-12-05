@@ -6,6 +6,7 @@
  */
 
 import { SEED_FREQUENCIES } from '../constants/seeds';
+import { AudioSource } from '../types/player';
 
 // ============================================================================
 // Data Types
@@ -22,7 +23,7 @@ export interface Session {
 }
 
 export interface Frequency {
-  videoId: string;
+  videoId: string; // YouTube videoId or SoundCloud track URL
   title: string;
   addedAt: number;
   stars: Star[];
@@ -33,6 +34,8 @@ export interface Frequency {
   skips: number; // Times user skipped this frequency
   completions: number; // Times played to natural end
   duration?: number; // Video duration in seconds (for completion rate)
+  // v5: Multi-source support
+  source: AudioSource;
 }
 
 export interface ApiConfig {
@@ -57,7 +60,7 @@ export interface RadioData {
 
 export class StorageManager {
   private static readonly STORAGE_KEY = 'aviram-radio-data';
-  private static readonly VERSION = 4; // v4: Engagement algorithm (skips, completions)
+  private static readonly VERSION = 5; // v5: Multi-source support (youtube, soundcloud)
   private static readonly DEFAULT_WINDOW_SIZE = 30; // seconds
   private static readonly DEFAULT_PEAK_COUNT = 10;
 
@@ -130,9 +133,9 @@ export class StorageManager {
   // ==========================================================================
 
   /**
-   * Add a new frequency (video) to the collection
+   * Add a new frequency (video/track) to the collection
    */
-  static addFrequency(videoId: string, title: string): Frequency {
+  static addFrequency(videoId: string, title: string, source: AudioSource = 'youtube'): Frequency {
     const data = this.load();
 
     // Check if frequency already exists
@@ -149,6 +152,7 @@ export class StorageManager {
       sessions: [],
       skips: 0,
       completions: 0,
+      source,
     };
 
     data.frequencies.push(frequency);
@@ -600,6 +604,7 @@ export class StorageManager {
         sessions: [],
         skips: 0,
         completions: 0,
+        source: seed.source || 'youtube',
       });
     });
 
@@ -652,6 +657,18 @@ export class StorageManager {
         }
         if (freq.completions === undefined) {
           freq.completions = 0;
+        }
+      }
+    }
+
+    // v4 → v5: Add multi-source support
+    if (data.version < 5) {
+      console.log('[StorageManager] v4 → v5: Adding multi-source support');
+
+      for (const freq of data.frequencies) {
+        if ((freq as Frequency).source === undefined) {
+          // Default all existing frequencies to YouTube
+          (freq as Frequency).source = 'youtube';
         }
       }
     }

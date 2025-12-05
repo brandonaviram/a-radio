@@ -258,3 +258,42 @@ interface Session {
 - YouTube oEmbed: `https://www.youtube.com/oembed?url=...&format=json`
 - OpenAI: `https://api.openai.com/v1/chat/completions`
 - Anthropic: `https://api.anthropic.com/v1/messages`
+
+## Infrastructure
+
+### Deployment
+- **Hosting**: Vercel (project: `aviram-radio`)
+- **Primary URL**: https://aviram-radio.vercel.app
+- **Custom Domain**: radio.aviram.xyz
+
+### Domain Configuration
+- **Domain Registrar**: Squarespace Domains (aviram.xyz)
+- **DNS for radio.aviram.xyz**: Add A record pointing to `76.76.21.21`
+
+### Universal Auth (Aviram Ecosystem)
+- Part of the Aviram ecosystem with shared authentication
+- Auth handled by aviram.xyz (the hub) via Supabase
+- Cookies set on `.aviram.xyz` domain for cross-subdomain auth
+- AuthProvider in `src/components/AuthProvider.tsx` checks session on load
+- If not authenticated → redirects to `www.aviram.xyz/auth?redirect=https://radio.aviram.xyz`
+
+**Auth Flow:**
+1. AuthProvider calls `www.aviram.xyz/api/auth/verify` with `credentials: 'include'`
+2. Verify endpoint reads `.aviram.xyz` cookies and checks Supabase session
+3. If 401 (not authenticated) → redirect to auth hub
+4. If 200 → user is authenticated, render app
+
+**Environment Variables:**
+- `VITE_SUPABASE_URL` - Same as aviram.xyz
+- `VITE_SUPABASE_ANON_KEY` - Same as aviram.xyz
+- `VITE_AUTH_HUB_URL` - **MUST be `https://www.aviram.xyz`** (with www!)
+
+**Critical Bug (2025-12-05):**
+- `aviram.xyz` redirects 307 to `www.aviram.xyz`
+- This redirect breaks `credentials: 'include'` (cookies not sent across redirect)
+- Fix: Always use `www.aviram.xyz` as AUTH_HUB_URL
+
+**Custom Supabase Client:**
+- Uses custom cookie storage in `src/lib/supabase.ts`
+- Read-only storage (doesn't set cookies - hub handles that)
+- Reads cookies set by hub on `.aviram.xyz` domain

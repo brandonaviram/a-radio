@@ -5,9 +5,12 @@
  * is loaded for the first time (empty localStorage).
  */
 
+import { AudioSource } from '../types/player';
+
 export interface SeedFrequency {
   videoId: string;
   title: string;
+  source?: AudioSource; // Defaults to 'youtube' if not specified
 }
 
 export const SEED_FREQUENCIES: SeedFrequency[] = [

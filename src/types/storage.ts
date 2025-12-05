@@ -1,3 +1,5 @@
+import { AudioSource } from './player';
+
 export interface Star {
   timestamp: number;
   createdAt: number;
@@ -9,7 +11,7 @@ export interface Session {
 }
 
 export interface Frequency {
-  videoId: string;
+  videoId: string; // YouTube videoId or SoundCloud track URL
   title: string;
   addedAt: number;
   stars: Star[];
@@ -20,6 +22,8 @@ export interface Frequency {
   skips: number;
   completions: number;
   duration?: number;
+  // v5: Multi-source support
+  source: AudioSource;
 }
 
 export interface RadioData {

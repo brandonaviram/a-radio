@@ -3,13 +3,27 @@
  *
  * Generates museum placard-style notes for audio content using AI.
  * Supports OpenAI and Anthropic providers.
+ * Fetches metadata from YouTube (oEmbed) and SoundCloud (oEmbed).
  */
+
+import { AudioSource } from '../types/player';
 
 interface ArchivistConfig {
   apiKey: string;
   provider: 'openai' | 'anthropic';
 }
 
+export interface TrackMetadata {
+  sourceId: string;
+  source: AudioSource;
+  title?: string;
+  author?: string;
+  description?: string;
+  thumbnailUrl?: string;
+  tags?: string[];
+}
+
+// Legacy alias for backward compatibility
 interface VideoMetadata {
   videoId: string;
   title?: string;
@@ -47,6 +61,20 @@ interface YouTubeOEmbedResponse {
   html: string;
 }
 
+interface SoundCloudOEmbedResponse {
+  title: string;
+  author_name: string;
+  author_url: string;
+  thumbnail_url: string;
+  html: string;
+  version: string;
+  type: string;
+  provider_name: string;
+  provider_url: string;
+  height: number;
+  width: string;
+}
+
 const CURATOR_SYSTEM_PROMPT = `You are a late-night radio host writing brief intros for an audio archive — think NPR Tiny Desk, RadioLab, or All Songs Considered.
 
 Your task is to write a 2-3 sentence description that makes someone hear the audio differently.
@@ -71,6 +99,7 @@ export class ArchivistService {
   private static config: ArchivistConfig | null = null;
   // In-memory cache for oEmbed metadata (persists for session)
   private static metadataCache: Map<string, VideoMetadata> = new Map();
+  private static trackMetadataCache: Map<string, TrackMetadata> = new Map();
 
   /**
    * Configure the Archivist with API credentials
@@ -137,6 +166,73 @@ export class ArchivistService {
         tags: [],
       };
     }
+  }
+
+  /**
+   * Fetch SoundCloud track metadata using oEmbed endpoint (no API key needed)
+   */
+  static async fetchSoundCloudMetadata(trackUrl: string): Promise<TrackMetadata> {
+    // Check cache first
+    const cached = this.trackMetadataCache.get(trackUrl);
+    if (cached) {
+      console.log(`[Archivist] Using cached SoundCloud metadata for: ${trackUrl}`);
+      return cached;
+    }
+
+    try {
+      const oembedUrl = `https://soundcloud.com/oembed?url=${encodeURIComponent(trackUrl)}&format=json`;
+      const response = await fetch(oembedUrl);
+
+      if (!response.ok) {
+        throw new Error(`SoundCloud oEmbed failed: ${response.status}`);
+      }
+
+      const data: SoundCloudOEmbedResponse = await response.json();
+
+      const metadata: TrackMetadata = {
+        sourceId: trackUrl,
+        source: 'soundcloud',
+        title: data.title,
+        author: data.author_name,
+        description: `By ${data.author_name}`,
+        thumbnailUrl: data.thumbnail_url,
+        tags: [],
+      };
+
+      // Cache the result
+      this.trackMetadataCache.set(trackUrl, metadata);
+      console.log(`[Archivist] Cached SoundCloud metadata for: ${trackUrl}`);
+
+      return metadata;
+    } catch (error) {
+      console.error('[Archivist] Failed to fetch SoundCloud metadata:', error);
+      return {
+        sourceId: trackUrl,
+        source: 'soundcloud',
+        title: 'Unknown Track',
+        description: undefined,
+        tags: [],
+      };
+    }
+  }
+
+  /**
+   * Unified metadata fetch - works for any supported source
+   */
+  static async fetchTrackMetadata(sourceId: string, source: AudioSource): Promise<TrackMetadata> {
+    if (source === 'soundcloud') {
+      return this.fetchSoundCloudMetadata(sourceId);
+    }
+
+    // Default to YouTube
+    const ytMetadata = await this.fetchVideoMetadata(sourceId);
+    return {
+      sourceId,
+      source: 'youtube',
+      title: ytMetadata.title,
+      description: ytMetadata.description,
+      tags: ytMetadata.tags,
+    };
   }
 
   /**

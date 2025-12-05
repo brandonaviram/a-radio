@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Radio, Volume2, VolumeX, Play, Pause, Star, SkipBack, SkipForward, Settings, Download, Upload, Tv } from 'lucide-react'
-import { useYouTubePlayer, extractVideoId } from './hooks/useYouTubePlayer'
+import { useAudioPlayer } from './hooks/useAudioPlayer'
 import { StorageManager } from './services/StorageManager'
 import { ArchivistService } from './services/ArchivistService'
 import { SignalVisualizer, ArchivistLog, RetroTV } from './components'
 import { COPY } from './constants/microcopy'
 import { KEYBOARD_SHORTCUTS, SEEK_AMOUNT } from './constants/keyboard'
+import { detectSource } from './utils/sourceDetection'
 import type { Frequency } from './services/StorageManager'
+import type { AudioSource } from './types/player'
 
 type ViewMode = 'receiver' | 'settings'
 
@@ -22,6 +24,9 @@ function FrequencyItem({
   onLoad: () => void
   badge?: string
 }) {
+  // Source indicator for non-YouTube sources
+  const sourceIndicator = freq.source === 'soundcloud' ? '☁' : null
+
   return (
     <button
       onClick={onLoad}
@@ -29,7 +34,8 @@ function FrequencyItem({
         isActive ? 'border-amber-500/50 bg-amber-500/5' : ''
       }`}
     >
-      <span className="text-xs text-zinc-400 truncate flex-1 mr-4">
+      <span className="text-xs text-zinc-400 truncate flex-1 mr-4 flex items-center gap-2">
+        {sourceIndicator && <span className="text-zinc-600">{sourceIndicator}</span>}
         {freq.title}
       </span>
       {badge && (
@@ -40,8 +46,9 @@ function FrequencyItem({
 }
 
 function App() {
-  const [playerState, controls] = useYouTubePlayer()
+  const { state: playerState, controls } = useAudioPlayer()
   const [inputUrl, setInputUrl] = useState('')
+  const [currentSource, setCurrentSource] = useState<AudioSource>('youtube')
   const [frequencies, setFrequencies] = useState(StorageManager.getAllFrequencies())
   const [currentTitle, setCurrentTitle] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('receiver')
@@ -103,18 +110,18 @@ function App() {
     }
   }
 
-  // Fetch video title and AI notes for current video
-  const fetchArchivistNotes = useCallback(async (videoId: string) => {
+  // Fetch track title and AI notes for current audio
+  const fetchArchivistNotes = useCallback(async (sourceId: string, source: AudioSource) => {
     // Always fetch title first (oEmbed doesn't need API key)
     try {
-      const metadata = await ArchivistService.fetchVideoMetadata(videoId)
+      const metadata = await ArchivistService.fetchTrackMetadata(sourceId, source)
       setCurrentTitle(metadata.title || null)
     } catch (error) {
-      console.error('Failed to fetch video title:', error)
+      console.error('Failed to fetch track title:', error)
     }
 
     // Check cache for AI notes
-    const cached = StorageManager.getArchivistNotes(videoId)
+    const cached = StorageManager.getArchivistNotes(sourceId)
     if (cached) {
       setArchivistNotes(cached)
       return
@@ -130,13 +137,20 @@ function App() {
     setArchivistNotes(null)
 
     try {
-      const metadata = await ArchivistService.fetchVideoMetadata(videoId)
-      const notes = await ArchivistService.generateNotes(metadata)
+      const metadata = await ArchivistService.fetchTrackMetadata(sourceId, source)
+      // Convert to legacy format for generateNotes (backward compat)
+      const legacyMetadata = {
+        videoId: sourceId,
+        title: metadata.title,
+        description: metadata.description,
+        tags: metadata.tags,
+      }
+      const notes = await ArchivistService.generateNotes(legacyMetadata)
       setArchivistNotes(notes)
 
       // Cache the notes
       if (!notes.startsWith('//')) {
-        StorageManager.setArchivistNotes(videoId, notes)
+        StorageManager.setArchivistNotes(sourceId, notes)
       }
     } catch (error) {
       console.error('Failed to fetch archivist notes:', error)
@@ -146,17 +160,18 @@ function App() {
     }
   }, [])
 
-  // Load a frequency
+  // Load a frequency (supports YouTube and SoundCloud URLs)
   const loadFrequency = useCallback((url: string) => {
-    const videoId = extractVideoId(url)
-    if (videoId) {
-      controls.loadVideo(videoId)
+    const detection = detectSource(url)
+    if (detection) {
+      controls.loadVideo(detection.id)
+      setCurrentSource(detection.source)
       setCurrentTitle(null)
       setArchivistNotes(null)
-      StorageManager.setLastVideoId(videoId)
+      StorageManager.setLastVideoId(detection.id)
 
       // Fetch title and notes
-      fetchArchivistNotes(videoId)
+      fetchArchivistNotes(detection.id, detection.source)
     }
   }, [controls, fetchArchivistNotes])
 
@@ -180,7 +195,7 @@ function App() {
       let title = currentTitle
       if (!title) {
         try {
-          const metadata = await ArchivistService.fetchVideoMetadata(playerState.videoId)
+          const metadata = await ArchivistService.fetchTrackMetadata(playerState.videoId, currentSource)
           title = metadata.title || null
           if (title) {
             setCurrentTitle(title)
@@ -189,10 +204,10 @@ function App() {
           console.error('Failed to fetch title for lock:', error)
         }
       }
-      StorageManager.addFrequency(playerState.videoId, title || `Frequency ${playerState.videoId}`)
+      StorageManager.addFrequency(playerState.videoId, title || `Frequency ${playerState.videoId}`, currentSource)
     }
     setFrequencies(StorageManager.getAllFrequencies())
-  }, [playerState.videoId, isLocked, currentTitle])
+  }, [playerState.videoId, isLocked, currentTitle, currentSource])
 
   // Mark signal (add star at current time)
   const markSignal = useCallback(() => {
@@ -247,10 +262,10 @@ function App() {
 
       // Re-fetch notes if we have a video
       if (playerState.videoId) {
-        fetchArchivistNotes(playerState.videoId)
+        fetchArchivistNotes(playerState.videoId, currentSource)
       }
     }
-  }, [apiKey, apiProvider, playerState.videoId, fetchArchivistNotes])
+  }, [apiKey, apiProvider, playerState.videoId, currentSource, fetchArchivistNotes])
 
   // Export data
   const handleExport = useCallback(() => {
@@ -342,10 +357,16 @@ function App() {
     const lastPosition = StorageManager.getLastPosition()
     if (lastVideoId) {
       hasLoadedInitialVideo.current = true
+
+      // Try to determine source from stored frequency, fallback to detection
+      const storedFreq = StorageManager.getFrequency(lastVideoId)
+      const source: AudioSource = storedFreq?.source || (detectSource(lastVideoId)?.source ?? 'youtube')
+      setCurrentSource(source)
+
       // Pass start time directly to loadVideo
       controls.loadVideo(lastVideoId, lastPosition > 0 ? lastPosition : undefined)
-      fetchArchivistNotes(lastVideoId)
-      console.log(`[App] Restored video ${lastVideoId} at position ${lastPosition}`)
+      fetchArchivistNotes(lastVideoId, source)
+      console.log(`[App] Restored ${source} ${lastVideoId} at position ${lastPosition}`)
     }
   }, [playerState.isReady, controls, fetchArchivistNotes])
 
@@ -376,8 +397,8 @@ function App() {
 
       for (const freq of badTitleFreqs) {
         try {
-          const metadata = await ArchivistService.fetchVideoMetadata(freq.videoId)
-          if (metadata.title && metadata.title !== 'Unknown') {
+          const metadata = await ArchivistService.fetchTrackMetadata(freq.videoId, freq.source || 'youtube')
+          if (metadata.title && metadata.title !== 'Unknown' && metadata.title !== 'Unknown Track') {
             StorageManager.updateFrequencyTitle(freq.videoId, metadata.title)
             console.log(`[App] Fixed title for ${freq.videoId}: ${metadata.title}`)
           }
@@ -454,6 +475,7 @@ function App() {
         currentTime={playerState.currentTime}
         isVisible={showTV}
         onClose={() => setShowTV(false)}
+        source={currentSource}
       />
 
       {/* Header */}
