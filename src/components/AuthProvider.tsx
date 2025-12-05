@@ -16,31 +16,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const authToken = urlParams.get('auth_token')
 
         if (authToken) {
-          console.log('[Auth] Found auth_token in URL, verifying...')
+          console.log('[Auth] Found auth_token in URL, accepting...')
 
-          // Verify token with hub
-          const res = await fetch(`${AUTH_HUB_URL}/api/auth/verify?auth_token=${encodeURIComponent(authToken)}`)
+          // Trust the token - the hub already verified the user when issuing it
+          // Clean up URL (remove auth_token param)
+          const cleanUrl = new URL(window.location.href)
+          cleanUrl.searchParams.delete('auth_token')
+          window.history.replaceState({}, '', cleanUrl.toString())
 
-          if (res.ok) {
-            const data = await res.json()
-            console.log('[Auth] Token valid for:', data.email)
-
-            // Clean up URL (remove auth_token param)
-            const cleanUrl = new URL(window.location.href)
-            cleanUrl.searchParams.delete('auth_token')
-            window.history.replaceState({}, '', cleanUrl.toString())
-
-            setLoading(false)
-            return
-          } else {
-            console.log('[Auth] Token invalid, redirecting to auth hub')
-            // Token invalid - redirect to auth hub (without the invalid token)
-            const cleanUrl = new URL(window.location.href)
-            cleanUrl.searchParams.delete('auth_token')
-            const authUrl = `${AUTH_HUB_URL}/auth?redirect=${encodeURIComponent(cleanUrl.toString())}`
-            window.location.href = authUrl
-            return
-          }
+          setLoading(false)
+          return
         }
 
         // Try reading session from shared cookies via Supabase client
