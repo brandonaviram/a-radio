@@ -16,14 +16,33 @@ const getProjectRef = () => {
 
 // Custom cookie storage for cross-subdomain auth
 // Reads cookies set by aviram.xyz on .aviram.xyz domain
+// Handles Supabase SSR chunked cookies (.0, .1, .2, etc.)
 const cookieStorage = {
   getItem: (key: string) => {
-    console.log('[Supabase Storage] Getting:', key)
-    console.log('[Supabase Storage] All cookies:', document.cookie)
-    const match = document.cookie.match(new RegExp(`(^| )${key}=([^;]+)`))
-    const value = match ? decodeURIComponent(match[2]) : null
-    console.log('[Supabase Storage] Found:', value ? 'yes' : 'no')
-    return value
+    // First try direct cookie (non-chunked)
+    const directMatch = document.cookie.match(new RegExp(`(^| )${key}=([^;]+)`))
+    if (directMatch) {
+      return decodeURIComponent(directMatch[2])
+    }
+
+    // Try chunked cookies (.0, .1, .2, etc.)
+    const chunks: string[] = []
+    let i = 0
+    while (true) {
+      const chunkKey = `${key}.${i}`
+      const chunkMatch = document.cookie.match(new RegExp(`(^| )${chunkKey}=([^;]+)`))
+      if (!chunkMatch) break
+      chunks.push(decodeURIComponent(chunkMatch[2]))
+      i++
+    }
+
+    if (chunks.length > 0) {
+      const reassembled = chunks.join('')
+      console.log('[Supabase Storage] Reassembled', chunks.length, 'chunks for:', key)
+      return reassembled
+    }
+
+    return null
   },
   setItem: (_key: string, _value: string) => {
     // Don't set cookies from radio - aviram.xyz hub handles this
