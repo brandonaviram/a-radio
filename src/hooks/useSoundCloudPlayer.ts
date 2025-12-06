@@ -134,49 +134,60 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
 
         // Wait for iframe to load before initializing widget
         iframe.onload = () => {
-          if (!mounted || !window.SC) return;
+          if (!mounted) return;
 
-          const widget = window.SC.Widget(iframe);
-          widgetRef.current = widget;
-
-          // Bind events
-          widget.bind(window.SC.Events.READY, () => {
-            dispatch({ type: 'SET_READY', payload: true });
-          });
-
-          widget.bind(window.SC.Events.PLAY, () => {
-            dispatch({ type: 'SET_PLAYING', payload: true });
-            dispatch({ type: 'SET_STATUS', payload: 'transmitting' });
-            startTimeUpdate();
-          });
-
-          widget.bind(window.SC.Events.PAUSE, () => {
-            dispatch({ type: 'SET_PLAYING', payload: false });
-            dispatch({ type: 'SET_STATUS', payload: 'idle' });
-            stopTimeUpdate();
-          });
-
-          // PLAY_PROGRESS fires during playback with position data
-          widget.bind(window.SC.Events.PLAY_PROGRESS, (data) => {
-            if (data?.currentPosition !== undefined) {
-              dispatch({ type: 'SET_CURRENT_TIME', payload: data.currentPosition / 1000 });
+          // Poll for SC API to be ready (race condition fix)
+          const initWidget = () => {
+            if (!window.SC || !window.SC.Widget || !window.SC.Events) {
+              setTimeout(initWidget, 100);
+              return;
             }
-          });
 
-          widget.bind(window.SC.Events.FINISH, () => {
-            dispatch({ type: 'SET_PLAYING', payload: false });
-            dispatch({ type: 'SET_STATUS', payload: 'halted' });
-            stopTimeUpdate();
-          });
+            const widget = window.SC.Widget(iframe);
+            widgetRef.current = widget;
 
-          widget.bind(window.SC.Events.ERROR, () => {
-            dispatch({ type: 'SET_STATUS', payload: 'signal-lost' });
-            dispatch({ type: 'SET_PLAYING', payload: false });
-            stopTimeUpdate();
-          });
+            // Bind events
+            widget.bind(window.SC.Events.READY, () => {
+              dispatch({ type: 'SET_READY', payload: true });
+            });
 
-          // Mark as ready (basic ready state, will be truly ready after loading a track)
-          dispatch({ type: 'SET_READY', payload: true });
+            widget.bind(window.SC.Events.PLAY, () => {
+              dispatch({ type: 'SET_PLAYING', payload: true });
+              dispatch({ type: 'SET_STATUS', payload: 'transmitting' });
+              startTimeUpdate();
+            });
+
+            widget.bind(window.SC.Events.PAUSE, () => {
+              dispatch({ type: 'SET_PLAYING', payload: false });
+              dispatch({ type: 'SET_STATUS', payload: 'idle' });
+              stopTimeUpdate();
+            });
+
+            // PLAY_PROGRESS fires during playback with position data
+            widget.bind(window.SC.Events.PLAY_PROGRESS, (data) => {
+              if (data?.currentPosition !== undefined) {
+                dispatch({ type: 'SET_CURRENT_TIME', payload: data.currentPosition / 1000 });
+              }
+            });
+
+            widget.bind(window.SC.Events.FINISH, () => {
+              dispatch({ type: 'SET_PLAYING', payload: false });
+              dispatch({ type: 'SET_STATUS', payload: 'halted' });
+              stopTimeUpdate();
+            });
+
+            widget.bind(window.SC.Events.ERROR, () => {
+              dispatch({ type: 'SET_STATUS', payload: 'signal-lost' });
+              dispatch({ type: 'SET_PLAYING', payload: false });
+              stopTimeUpdate();
+            });
+
+            // Mark as ready
+            dispatch({ type: 'SET_READY', payload: true });
+            console.log('[SoundCloud] Widget initialized');
+          };
+
+          initWidget();
         };
       } catch (error) {
         console.error('[SoundCloud] Failed to initialize player:', error);
