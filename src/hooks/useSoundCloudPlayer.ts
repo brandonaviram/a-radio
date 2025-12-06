@@ -98,6 +98,7 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const timeUpdateIntervalRef = useRef<number | null>(null);
   const currentVolumeRef = useRef<number>(100);
+  const pendingLoadRef = useRef<{ url: string; startTime?: number } | null>(null);
 
   // Initialize SoundCloud player
   useEffect(() => {
@@ -185,6 +186,29 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
             // Mark as ready
             dispatch({ type: 'SET_READY', payload: true });
             console.log('[SoundCloud] Widget initialized');
+
+            // Check for pending load
+            if (pendingLoadRef.current) {
+              console.log('[SoundCloud] Loading pending track:', pendingLoadRef.current.url);
+              const { url, startTime } = pendingLoadRef.current;
+              pendingLoadRef.current = null;
+
+              dispatch({ type: 'SET_VIDEO_ID', payload: url });
+              dispatch({ type: 'SET_STATUS', payload: 'scanning' });
+              widget.load(url, {
+                auto_play: false,
+                show_artwork: true,
+                show_comments: false,
+                show_playcount: false,
+                show_user: true,
+              });
+
+              if (startTime && startTime > 0) {
+                setTimeout(() => {
+                  widget.seekTo(startTime * 1000);
+                }, 1000);
+              }
+            }
           };
 
           initWidget();
@@ -233,7 +257,11 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
   // Load a SoundCloud track
   const loadVideo = useCallback((trackUrl: string, startTime?: number) => {
     if (!widgetRef.current) {
-      console.warn('[SoundCloud] Widget not ready');
+      // Queue the load for when widget is ready
+      console.log('[SoundCloud] Widget not ready, queuing load:', trackUrl);
+      pendingLoadRef.current = { url: trackUrl, startTime };
+      dispatch({ type: 'SET_VIDEO_ID', payload: trackUrl });
+      dispatch({ type: 'SET_STATUS', payload: 'scanning' });
       return;
     }
 
