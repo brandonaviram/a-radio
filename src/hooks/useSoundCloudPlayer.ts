@@ -123,13 +123,14 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
         containerRef.current = container;
 
         // Create iframe for SoundCloud widget
+        // Use a silent/short track as placeholder to avoid 404 on empty URL
         const iframe = document.createElement('iframe');
         iframe.id = 'soundcloud-widget';
         iframe.allow = 'autoplay';
         iframe.width = '100%';
         iframe.height = '166';
-        // Start with empty widget URL - will load track via API
-        iframe.src = 'https://w.soundcloud.com/player/?url=';
+        // Use a real track URL to initialize (will be replaced when loading)
+        iframe.src = 'https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/tracks/293&auto_play=false';
         container.appendChild(iframe);
         iframeRef.current = iframe;
 
