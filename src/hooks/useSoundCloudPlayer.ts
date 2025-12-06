@@ -74,18 +74,56 @@ declare global {
 // Load SoundCloud Widget API script
 function loadSoundCloudAPI(): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (window.SC) {
+    // Check if already loaded and ready
+    if (window.SC && window.SC.Widget) {
       resolve();
       return;
     }
 
+    // Check if script is already loading
+    const existingScript = document.querySelector('script[src*="w.soundcloud.com/player/api.js"]');
+    if (existingScript) {
+      // Wait for it to load
+      const checkReady = setInterval(() => {
+        if (window.SC && window.SC.Widget) {
+          clearInterval(checkReady);
+          resolve();
+        }
+      }, 50);
+
+      // Timeout after 5 seconds
+      setTimeout(() => {
+        clearInterval(checkReady);
+        reject(new Error('SoundCloud API load timeout'));
+      }, 5000);
+      return;
+    }
+
+    // Load the script
     const script = document.createElement('script');
     script.src = 'https://w.soundcloud.com/player/api.js';
     script.async = true;
+
     script.onload = () => {
-      // Small delay to ensure SC is fully initialized
-      setTimeout(() => resolve(), 100);
+      // Poll until SC.Widget is available
+      const waitForWidget = setInterval(() => {
+        if (window.SC && window.SC.Widget) {
+          clearInterval(waitForWidget);
+          resolve();
+        }
+      }, 50);
+
+      // Timeout safety
+      setTimeout(() => {
+        clearInterval(waitForWidget);
+        if (window.SC && window.SC.Widget) {
+          resolve();
+        } else {
+          reject(new Error('SC.Widget not available'));
+        }
+      }, 2000);
     };
+
     script.onerror = () => reject(new Error('Failed to load SoundCloud API'));
     document.body.appendChild(script);
   });
@@ -138,81 +176,77 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
         iframe.onload = () => {
           if (!mounted) return;
 
-          // Poll for SC API to be ready (race condition fix)
-          const initWidget = () => {
-            if (!window.SC || !window.SC.Widget || !window.SC.Events) {
-              setTimeout(initWidget, 100);
-              return;
-            }
+          // SC API should already be loaded by loadSoundCloudAPI()
+          if (!window.SC || !window.SC.Widget) {
+            console.error('[SoundCloud] API not ready after iframe load');
+            return;
+          }
 
-            const widget = window.SC.Widget(iframe);
-            widgetRef.current = widget;
+          const widget = window.SC.Widget(iframe);
+          widgetRef.current = widget;
 
-            // Bind events
-            widget.bind(window.SC.Events.READY, () => {
-              dispatch({ type: 'SET_READY', payload: true });
-            });
-
-            widget.bind(window.SC.Events.PLAY, () => {
-              dispatch({ type: 'SET_PLAYING', payload: true });
-              dispatch({ type: 'SET_STATUS', payload: 'transmitting' });
-              startTimeUpdate();
-            });
-
-            widget.bind(window.SC.Events.PAUSE, () => {
-              dispatch({ type: 'SET_PLAYING', payload: false });
-              dispatch({ type: 'SET_STATUS', payload: 'idle' });
-              stopTimeUpdate();
-            });
-
-            // PLAY_PROGRESS fires during playback with position data
-            widget.bind(window.SC.Events.PLAY_PROGRESS, (data) => {
-              if (data?.currentPosition !== undefined) {
-                dispatch({ type: 'SET_CURRENT_TIME', payload: data.currentPosition / 1000 });
-              }
-            });
-
-            widget.bind(window.SC.Events.FINISH, () => {
-              dispatch({ type: 'SET_PLAYING', payload: false });
-              dispatch({ type: 'SET_STATUS', payload: 'halted' });
-              stopTimeUpdate();
-            });
-
-            widget.bind(window.SC.Events.ERROR, () => {
-              dispatch({ type: 'SET_STATUS', payload: 'signal-lost' });
-              dispatch({ type: 'SET_PLAYING', payload: false });
-              stopTimeUpdate();
-            });
-
-            // Mark as ready
+          // Bind events
+          widget.bind(window.SC.Events.READY, () => {
             dispatch({ type: 'SET_READY', payload: true });
-            console.log('[SoundCloud] Widget initialized');
+          });
 
-            // Check for pending load
-            if (pendingLoadRef.current) {
-              console.log('[SoundCloud] Loading pending track:', pendingLoadRef.current.url);
-              const { url, startTime } = pendingLoadRef.current;
-              pendingLoadRef.current = null;
+          widget.bind(window.SC.Events.PLAY, () => {
+            dispatch({ type: 'SET_PLAYING', payload: true });
+            dispatch({ type: 'SET_STATUS', payload: 'transmitting' });
+            startTimeUpdate();
+          });
 
-              dispatch({ type: 'SET_VIDEO_ID', payload: url });
-              dispatch({ type: 'SET_STATUS', payload: 'scanning' });
-              widget.load(url, {
-                auto_play: false,
-                show_artwork: true,
-                show_comments: false,
-                show_playcount: false,
-                show_user: true,
-              });
+          widget.bind(window.SC.Events.PAUSE, () => {
+            dispatch({ type: 'SET_PLAYING', payload: false });
+            dispatch({ type: 'SET_STATUS', payload: 'idle' });
+            stopTimeUpdate();
+          });
 
-              if (startTime && startTime > 0) {
-                setTimeout(() => {
-                  widget.seekTo(startTime * 1000);
-                }, 1000);
-              }
+          // PLAY_PROGRESS fires during playback with position data
+          widget.bind(window.SC.Events.PLAY_PROGRESS, (data) => {
+            if (data?.currentPosition !== undefined) {
+              dispatch({ type: 'SET_CURRENT_TIME', payload: data.currentPosition / 1000 });
             }
-          };
+          });
 
-          initWidget();
+          widget.bind(window.SC.Events.FINISH, () => {
+            dispatch({ type: 'SET_PLAYING', payload: false });
+            dispatch({ type: 'SET_STATUS', payload: 'halted' });
+            stopTimeUpdate();
+          });
+
+          widget.bind(window.SC.Events.ERROR, () => {
+            dispatch({ type: 'SET_STATUS', payload: 'signal-lost' });
+            dispatch({ type: 'SET_PLAYING', payload: false });
+            stopTimeUpdate();
+          });
+
+          // Mark as ready
+          dispatch({ type: 'SET_READY', payload: true });
+          console.log('[SoundCloud] Widget initialized');
+
+          // Check for pending load
+          if (pendingLoadRef.current) {
+            console.log('[SoundCloud] Loading pending track:', pendingLoadRef.current.url);
+            const { url, startTime } = pendingLoadRef.current;
+            pendingLoadRef.current = null;
+
+            dispatch({ type: 'SET_VIDEO_ID', payload: url });
+            dispatch({ type: 'SET_STATUS', payload: 'scanning' });
+            widget.load(url, {
+              auto_play: false,
+              show_artwork: true,
+              show_comments: false,
+              show_playcount: false,
+              show_user: true,
+            });
+
+            if (startTime && startTime > 0) {
+              setTimeout(() => {
+                widget.seekTo(startTime * 1000);
+              }, 1000);
+            }
+          }
         };
       } catch (error) {
         console.error('[SoundCloud] Failed to initialize player:', error);
