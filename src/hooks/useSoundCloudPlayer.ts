@@ -146,12 +146,21 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
 
           widget.bind(window.SC.Events.PLAY, () => {
             dispatch({ type: 'SET_PLAYING', payload: true });
+            dispatch({ type: 'SET_STATUS', payload: 'transmitting' });
             startTimeUpdate();
           });
 
           widget.bind(window.SC.Events.PAUSE, () => {
             dispatch({ type: 'SET_PLAYING', payload: false });
+            dispatch({ type: 'SET_STATUS', payload: 'idle' });
             stopTimeUpdate();
+          });
+
+          // PLAY_PROGRESS fires during playback with position data
+          widget.bind(window.SC.Events.PLAY_PROGRESS, (data) => {
+            if (data?.currentPosition !== undefined) {
+              dispatch({ type: 'SET_CURRENT_TIME', payload: data.currentPosition / 1000 });
+            }
           });
 
           widget.bind(window.SC.Events.FINISH, () => {
@@ -220,31 +229,6 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
     dispatch({ type: 'SET_VIDEO_ID', payload: trackUrl });
     dispatch({ type: 'SET_STATUS', payload: 'scanning' });
 
-    // Bind a one-time READY event for this specific load
-    const onTrackReady = () => {
-      dispatch({ type: 'SET_STATUS', payload: 'idle' });
-
-      // Get and set duration immediately
-      widgetRef.current?.getDuration((duration) => {
-        dispatch({ type: 'SET_DURATION', payload: duration / 1000 });
-      });
-
-      // If startTime provided, seek after load
-      if (startTime && startTime > 0) {
-        widgetRef.current?.seekTo(startTime * 1000); // Convert seconds to ms
-      }
-
-      // Unbind this specific handler
-      widgetRef.current?.unbind(window.SC.Events.READY);
-
-      // Re-bind the general READY handler
-      widgetRef.current?.bind(window.SC.Events.READY, () => {
-        dispatch({ type: 'SET_READY', payload: true });
-      });
-    };
-
-    widgetRef.current.bind(window.SC.Events.READY, onTrackReady);
-
     widgetRef.current.load(trackUrl, {
       auto_play: false,
       show_artwork: true,
@@ -252,6 +236,14 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
       show_playcount: false,
       show_user: true,
     });
+
+    // If startTime provided, seek after load
+    if (startTime && startTime > 0) {
+      // Need to wait for track to load before seeking
+      setTimeout(() => {
+        widgetRef.current?.seekTo(startTime * 1000); // Convert seconds to ms
+      }, 1000);
+    }
   }, []);
 
   // Toggle play/pause
