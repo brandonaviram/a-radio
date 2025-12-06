@@ -220,6 +220,31 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
     dispatch({ type: 'SET_VIDEO_ID', payload: trackUrl });
     dispatch({ type: 'SET_STATUS', payload: 'scanning' });
 
+    // Bind a one-time READY event for this specific load
+    const onTrackReady = () => {
+      dispatch({ type: 'SET_STATUS', payload: 'idle' });
+
+      // Get and set duration immediately
+      widgetRef.current?.getDuration((duration) => {
+        dispatch({ type: 'SET_DURATION', payload: duration / 1000 });
+      });
+
+      // If startTime provided, seek after load
+      if (startTime && startTime > 0) {
+        widgetRef.current?.seekTo(startTime * 1000); // Convert seconds to ms
+      }
+
+      // Unbind this specific handler
+      widgetRef.current?.unbind(window.SC.Events.READY);
+
+      // Re-bind the general READY handler
+      widgetRef.current?.bind(window.SC.Events.READY, () => {
+        dispatch({ type: 'SET_READY', payload: true });
+      });
+    };
+
+    widgetRef.current.bind(window.SC.Events.READY, onTrackReady);
+
     widgetRef.current.load(trackUrl, {
       auto_play: false,
       show_artwork: true,
@@ -227,14 +252,6 @@ export function useSoundCloudPlayer(): [PlayerState, PlayerControls] {
       show_playcount: false,
       show_user: true,
     });
-
-    // If startTime provided, seek after load
-    if (startTime && startTime > 0) {
-      // Need to wait for track to load before seeking
-      setTimeout(() => {
-        widgetRef.current?.seekTo(startTime * 1000); // Convert seconds to ms
-      }, 1000);
-    }
   }, []);
 
   // Toggle play/pause
